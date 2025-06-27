@@ -28,11 +28,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final List<Map<String, dynamic>> _recentCalls = [];
   bool _isConnected = false;
   String _connectionStatus = "Connecting...";
-
   final Map<String, RTCVideoRenderer> _remoteRenderers = {};
   bool _isReceivingLiveStream = false;
   WebSocketChannel? _webSocketChannel;
-
   final AudioPlayer _audioPlayer = AudioPlayer();
   WebSocketChannel? _audioSocket;
   String? _currentlyStreamingCallId;
@@ -41,17 +39,18 @@ class _AdminDashboardState extends State<AdminDashboard> {
   String? _currentlyPlayingUrl;
   bool _isLiveStreamPlaying = false;
   String? _currentLiveStreamCallId;
-
   final _remoteRenderer = RTCVideoRenderer();
   bool _isRendererInitialized = false;
   final int _maxRecentCalls = 20;
   bool _isLoadingRecentCalls = false;
   String? _recentCallsError;
-
   String userStatus = 'Active';
   String recordingStatus = 'Recording';
-
   final List<Uint8List> _receivedChunks = [];
+  List<Map<String, dynamic>> _numberAccessList = [];
+  bool _isLoadingNumberAccess = false;
+  String? _numberAccessError;
+  List<Map<String, dynamic>> _userList = [];
 
   @override
   void initState() {
@@ -61,6 +60,34 @@ class _AdminDashboardState extends State<AdminDashboard> {
     _initializeWebSocket();
     _fetchRecentCalls();
     _fetchUserDetails();
+    _fetchNumberAccess();
+  }
+
+  Future<void> _fetchNumberAccess() async {
+    setState(() {
+      _isLoadingNumberAccess = true;
+      _numberAccessError = null;
+    });
+    try {
+      final response = await API.getCallNumberAccess();
+      if (response != null) {
+        setState(() {
+          _numberAccessList = response;
+        });
+      } else {
+        setState(() {
+          _numberAccessError = 'Failed to load number access data';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _numberAccessError = 'Error fetching number access data: ${e.toString()}';
+      });
+    } finally {
+      setState(() {
+        _isLoadingNumberAccess = false;
+      });
+    }
   }
 
   Future<void> _initRenderer() async {
@@ -84,7 +111,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
         });
       }
     });
-
     _audioPlayer.onPlayerComplete.listen((event) {
       if (mounted) {
         setState(() {
@@ -101,15 +127,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
     try {
       await _subscription?.cancel();
       await _channel?.sink.close();
-
       _channel = await WebSocketHelper.connect();
-
       _subscription = _channel?.stream.listen(
             (message) => _handleWebSocketMessage(message),
         onError: _handleWebSocketError,
         onDone: _handleWebSocketDisconnect,
       );
-
       setState(() {
         _isConnected = true;
         _connectionStatus = "Connected";
@@ -126,34 +149,27 @@ class _AdminDashboardState extends State<AdminDashboard> {
   void _handleWebSocketMessage(dynamic message) {
     try {
       final data = json.decode(message) as Map<String, dynamic>;
-
       if (data['type'] == 'pcm' && data['chunk'] != null) {
         final decodedChunk = base64Decode(data['chunk']);
         _receivedChunks.add(decodedChunk);
-
         print("PCM Chunk Received: ${decodedChunk.length} bytes");
         print("First 10 Samples: ${Int16List.view(decodedChunk.buffer).take(10).toList()}");
-
         return;
       }
-
       if (data.containsKey('error') && data.containsKey('received')) {
         final callData = json.decode(data['received']) as Map<String, dynamic>;
         _processCallData(callData);
         return;
       }
-
       _processCallData(data);
     } catch (e) {
       debugPrint("Error processing WebSocket message: $e");
     }
   }
 
-
   void _processCallData(Map<String, dynamic> data) {
     final String messageType = data['type'] ?? 'unknown';
     final String callId = data['callId'] ?? _generateCallId();
-
     switch (messageType) {
       case 'call_started':
         _handleCallStarted(data, callId);
@@ -217,22 +233,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
           }
         },
       );
-
-      // if (mounted) {
-      //   setState(() {
-      //     _activeCalls.add({
-      //       'callId': callId,
-      //       'senderNumber': data['callerNumber'] ?? data['senderNumber'] ?? 'Unknown',
-      //       'receiverNumber': data['receiverNumber'] ?? 'Unknown',
-      //       'contactName': data['contactName'] ?? 'Unknown',
-      //       'status': 'Incoming',
-      //       'startTime': DateTime.now(),
-      //       'duration': 0,
-      //       'audio_file': data['audio_file'],
-      //       'audioFile': data['audioFile'],
-      //     });
-      //   });
-      // }
     } catch (e) {
       debugPrint("Error initializing WebRTC receiver: $e");
     }
@@ -330,16 +330,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
   Future<void> _fetchRecentCalls() async {
     if (_isLoadingRecentCalls) return;
-
     setState(() {
       _isLoadingRecentCalls = true;
       _recentCallsError = null;
     });
-
     try {
-      // Fetch only the first page (you can change page/limit if needed)
       final List<Map<String, dynamic>>? apiCalls = await API.getCallDetails(page: 1, limit: _maxRecentCalls);
-
       if (apiCalls != null) {
         final List<Map<String, dynamic>> transformedCalls = apiCalls.map((call) {
           return {
@@ -354,11 +350,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             'audio_file': call['recording_url'],
           };
         }).toList();
-
-        // Sort by start time descending
-        transformedCalls.sort((a, b) =>
-            (b['startTime'] as DateTime).compareTo(a['startTime'] as DateTime));
-
+        transformedCalls.sort((a, b) => (b['startTime'] as DateTime).compareTo(a['startTime'] as DateTime));
         setState(() {
           _recentCalls
             ..clear()
@@ -380,31 +372,24 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-
   Future<void> _startLiveAudioStream(String callId) async {
     try {
-      // Stop any existing stream
       await _stopLiveAudioStream();
-
       final call = _activeCalls.firstWhere((c) => c['callId'] == callId, orElse: () => {});
       if (call.isEmpty) {
         _showSnackBar("Call not found", Colors.red);
         return;
       }
-
       setState(() {
         _isBuffering = true;
         _currentlyStreamingCallId = callId;
         _isLiveStreamPlaying = true;
         _currentLiveStreamCallId = callId;
       });
-
-      // Initialize WebRTC receiver if not already initialized for this call
       if (!_remoteRenderers.containsKey(callId)) {
         final renderer = RTCVideoRenderer();
         await renderer.initialize();
         _remoteRenderers[callId] = renderer;
-
         await WebRTCHelper.initializeReceiver(
           callId: callId,
           signalingChannel: _channel!,
@@ -415,13 +400,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 _isReceivingLiveStream = true;
                 _isBuffering = false;
               });
-              // Enable audio tracks
               stream.getAudioTracks().forEach((track) => track.enabled = true);
             }
-          }, onStreamUrl: (String streamUrl) {  },
+          },
+          onStreamUrl: (String streamUrl) {},
         );
       }
-
       print("Live audio stream started for call $callId");
     } catch (e) {
       print("Error starting live audio stream: $e");
@@ -429,17 +413,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-
-
-
   Future<void> _stopLiveAudioStream() async {
     try {
       await _audioSocket?.sink.close();
       await _audioPlayer.stop();
       _audioSocket = null;
       _cleanupStream(_currentlyStreamingCallId);
-
-      // Dispose of WebRTC renderers for stopped streams
       if (_currentlyStreamingCallId != null && _remoteRenderers.containsKey(_currentlyStreamingCallId)) {
         await _remoteRenderers[_currentlyStreamingCallId]!.dispose();
         _remoteRenderers.remove(_currentlyStreamingCallId);
@@ -475,18 +454,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
       setState(() {
         _isBuffering = true;
         _currentlyPlayingUrl = url;
-        _currentlyStreamingCallId = null; // Ensure live stream is stopped
+        _currentlyStreamingCallId = null;
         _isLiveStreamPlaying = false;
         _currentLiveStreamCallId = null;
       });
-
-      // Stop any existing playback
       await _audioPlayer.stop();
-
-      // Play the audio file directly from the URL
       await _audioPlayer.play(UrlSource(url));
       _audioPlayer.setPlayerMode(PlayerMode.mediaPlayer);
-
       _showSnackBar("Now playing call recording", Colors.green);
     } catch (e) {
       _handleError('Error playing recording: ${e.toString()}', callId);
@@ -496,7 +470,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
       }
     }
   }
-
 
   void _handleError(String message, String callId) {
     debugPrint("Error playing audio ($callId): $message");
@@ -508,8 +481,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     try {
       final files = await directory.list().toList();
       for (var file in files) {
-        if (file.path.contains('temp_audio_') &&
-            !file.path.contains(currentCallId)) {
+        if (file.path.contains('temp_audio_') && !file.path.contains(currentCallId)) {
           await file.delete();
         }
       }
@@ -568,14 +540,11 @@ class _AdminDashboardState extends State<AdminDashboard> {
     final bool isBuffering = _isBuffering;
     final callId = call['callId'];
     final isThisStreamPlaying = _currentlyStreamingCallId == callId && _playerState == PlayerState.playing;
-
     if (isBuffering && _currentlyStreamingCallId == callId) {
       return const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2));
     }
-
     final audioFile = call['audio_file'] ?? call['audioFile'] ?? call['recording_url'];
     final liveStreamUrl = call['live_stream_url'];
-
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -592,7 +561,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 await _pauseAudio();
               } else {
                 if (_currentlyStreamingCallId != callId) {
-                  await _stopLiveAudioStream(); // Stop any existing stream
+                  await _stopLiveAudioStream();
                 }
                 await _startLiveAudioStream(callId);
               }
@@ -611,7 +580,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 await _pauseAudio();
               } else {
                 if (_currentlyPlayingUrl != null && _currentlyPlayingUrl != audioFile) {
-                  await _stopAudio(); // Stop any existing playback
+                  await _stopAudio();
                 }
                 await _playRecording(audioFile, callId);
               }
@@ -653,17 +622,16 @@ class _AdminDashboardState extends State<AdminDashboard> {
     );
   }
 
+
+
   Future<void> _submitUserForm() async {
     if (_formKey.currentState!.validate()) {
       final phone = _phoneController.text.trim();
-
       try {
         final response = await API.addUserByAdmin(phone);
         if (response != null) {
           _showSnackBar('User added successfully', Colors.green);
-
           _phoneController.clear();
-
         } else {
           _showSnackBar('Failed to add user', Colors.red);
           _phoneController.clear();
@@ -674,12 +642,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-  List<Map<String, dynamic>> _userList = [];
+  Future<void> _refreshUserList() async {
+    await _fetchUserDetails();
+    setState(() {});
+  }
+
   bool _isFetchingUser = false;
 
-
   Widget _buildGetUserForm() {
-    if (_isFetchingUser) {
+    if (_isFetchingUser || _isLoadingNumberAccess) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -687,94 +658,223 @@ class _AdminDashboardState extends State<AdminDashboard> {
       return const Center(child: Text('No users found.'));
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _userList.length,
-      itemBuilder: (context, index) {
-        final user = _userList[index];
-        // Initialize dropdown values from user data
-        final currentActiveStatus = user['active'] == 1 ? 'Active' : 'Inactive';
-        final currentRecordingStatus = user['recordingStatus'] == 1 ? 'Recording' : 'UnRecording';
-
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          child: Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("Mobile: ${user['mobileno']}", style: const TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 4),
-                Text("User ID: ${user['userid']}"),
-                const SizedBox(height: 8),
-
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: currentActiveStatus,
-                        decoration: const InputDecoration(
-                          labelText: 'Status',
-                          border: OutlineInputBorder(),
+    return RefreshIndicator(
+      onRefresh: _refreshUserList,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _userList.length,
+        itemBuilder: (context, index) {
+          final user = _userList[index];
+          final currentActiveStatus = user['active'] == 1 ? 'Active' : 'Inactive';
+          final currentRecordingStatus = user['recordingStatus'] == 1 ? 'Recording' : 'UnRecording';
+      
+          if (user['selectedNumbers'] == null) {
+            user['selectedNumbers'] = [];
+          }
+      
+          return Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("Mobile: ${user['mobileno']}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text("User ID: ${user['userid']}"),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: currentActiveStatus,
+                          decoration: const InputDecoration(
+                            labelText: 'Status',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: 'Active', child: Text('Active')),
+                            DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
+                          ],
+                          onChanged: (newValue) {
+                            if (newValue != null) {
+                              _updateUserStatus(index, newValue, 'active');
+                            }
+                          },
                         ),
-                        items: const [
-                          DropdownMenuItem(value: 'Active', child: Text('Active')),
-                          DropdownMenuItem(value: 'Inactive', child: Text('Inactive')),
-                        ],
-                        onChanged: (newValue) {
-                          if (newValue != null) {
-                            _updateUserStatus(index, newValue, 'active');
-                          }
-                        },
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: currentRecordingStatus,
-                        decoration: const InputDecoration(
-                          labelText: 'Recording',
-                          border: OutlineInputBorder(),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: currentRecordingStatus,
+                          decoration: const InputDecoration(
+                            labelText: 'Recording',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: 'Recording', child: Text('Recording')),
+                            DropdownMenuItem(value: 'UnRecording', child: Text('UnRecording')),
+                          ],
+                          onChanged: (newValue) {
+                            if (newValue != null) {
+                              _updateUserStatus(index, newValue, 'recording');
+                            }
+                          },
                         ),
-                        items: const [
-                          DropdownMenuItem(value: 'Recording', child: Text('Recording')),
-                          DropdownMenuItem(value: 'UnRecording', child: Text('UnRecording')),
-                        ],
-                        onChanged: (newValue) {
-                          if (newValue != null) {
-                            _updateUserStatus(index, newValue, 'recording');
-                          }
-                        },
                       ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+      
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      await _showMultiSelectDialog(context, index);
+                      setState(() {}); // Rebuilds UI to reflect selected numbers
+                    },
+                    icon: const Icon(Icons.format_list_numbered),
+                    label: const Text('Select Numbers'),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      textStyle: Theme.of(context).textTheme.labelLarge,
                     ),
-                  ],
-                )
-              ],
+                  ),
+      
+                  Text('Selected Numbers: ${user['selectedNumbers']?.join(", ") ?? "None"}')
+      
+                ],
+              ),
             ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _sendSelectedNumbersToAPI(int index) async {
+    final user = _userList[index];
+    final List<String> selectedNumbers = List<String>.from(user['selectedNumbers']);
+
+    if (selectedNumbers.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No numbers selected.')),
+      );
+      return;
+    }
+
+    try {
+      print("USER DETAILS: $user");
+      final response = await API.sendSelectedNumbers(user['mobileno'], selectedNumbers);
+
+      if (response != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Selected numbers sent successfully.')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to send selected numbers.')),
+        );
+      }
+    } catch (e) {
+      print("Error while sending data: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error sending selected numbers: $e')),
+      );
+    }
+  }
+
+  Future<void> _showMultiSelectDialog(BuildContext context, int index) async {
+    final user = _userList[index];
+    final userMobileNumber = user['mobileno'];
+
+    // Filter out the user's own mobile number from the list
+    final filteredNumberAccessList = _numberAccessList.where((item) => item['mobileno'] != userMobileNumber).toList();
+
+    if (filteredNumberAccessList.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No numbers available to select.')),
+      );
+      return;
+    }
+
+    await showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Select Numbers'),
+          content: StatefulBuilder(
+            builder: (BuildContext context, StateSetter setStateDialog) {
+              return SingleChildScrollView(
+                child: ListBody(
+                  children: filteredNumberAccessList.map((item) {
+                    final mobileNo = item['mobileno'];
+                    final isSelected = _userList[index]['selectedNumbers'].contains(mobileNo);
+                    return CheckboxListTile(
+                      value: isSelected,
+                      title: Text(mobileNo),
+                      controlAffinity: ListTileControlAffinity.leading,
+                      onChanged: (isChecked) async {
+                        setStateDialog(() {
+                          if (isChecked == true) {
+                            _userList[index]['selectedNumbers'].add(mobileNo);
+                          } else {
+                            _userList[index]['selectedNumbers'].remove(mobileNo);
+                          }
+                        });
+
+                        // Call the delete API if the number is unselected
+                        if (isChecked == false) {
+                          _deleteSelectedNumber(userMobileNumber, mobileNo);
+                        }
+                      },
+                    );
+                  }).toList(),
+                ),
+              );
+            },
           ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Close'),
+              onPressed: () {
+                Navigator.of(context).pop();
+                _sendSelectedNumbersToAPI(index);
+              },
+            ),
+          ],
         );
       },
     );
   }
 
+  Future<void> _deleteSelectedNumber(String userMobileNumber, String selectedNumber) async {
+    try {
+      final response = await API.DeleteSelectedNumbers(userMobileNumber, [selectedNumber]);
+      if (response != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Number $selectedNumber deleted successfully.')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete number $selectedNumber.')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error deleting number $selectedNumber: $e')),
+      );
+    }
+  }
 
   Future<void> _updateUserStatus(int index, String newStatus, String statusType) async {
     final user = _userList[index];
     final phone = user['mobileno'];
-
-    // Determine values for both UI and API
     final isActive = newStatus == 'Active';
     final isRecording = newStatus == 'Recording';
-
-    // UI values (what Flutter shows)
     final uiActiveValue = isActive ? 1 : 0;
     final uiRecordingValue = isRecording ? 1 : 0;
-
-    // API values (what Django expects)
     final apiActiveValue = isActive ? 1 : 0;
-    final apiRecordingValue = isRecording ? 1 : 0; // Now matching Django's expectation
+    final apiRecordingValue = isRecording ? 1 : 0;
 
-    // Update local state
     setState(() {
       if (statusType == 'active') {
         _userList[index]['active'] = uiActiveValue;
@@ -783,26 +883,21 @@ class _AdminDashboardState extends State<AdminDashboard> {
       }
     });
 
-    // Update local storage
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(
-        '${phone}_${statusType}_status',
-        statusType == 'active' ? uiActiveValue : uiRecordingValue
+      '${phone}_${statusType}_status',
+      statusType == 'active' ? uiActiveValue : uiRecordingValue,
     );
 
-    // Prepare API data - using recordingStatus instead of recording
     final Map<String, dynamic> apiData = {};
     if (statusType == 'active') {
       apiData['active'] = apiActiveValue;
     } else {
-      apiData['recordingStatus'] = apiRecordingValue; // Changed to match Django field name
+      apiData['recordingStatus'] = apiRecordingValue;
     }
 
-    // Call API with proper data structure
     final success = await API.updateUserStatus(phone, apiData);
-
     if (!success) {
-      // Revert UI if API call fails
       setState(() {
         if (statusType == 'active') {
           _userList[index]['active'] = uiActiveValue == 1 ? 0 : 1;
@@ -814,59 +909,44 @@ class _AdminDashboardState extends State<AdminDashboard> {
     }
   }
 
-
-  // Future<void> _updateUserStatus(int index, String newStatus) async {
-  //   final user = _userList[index];
-  //   final phone = user['mobileno'];
-  //
-  //   setState(() {
-  //     _userList[index]['active'] = newStatus == 'Active' ? 1 : 0;
-  //   });
-  //
-  //   // Save to local storage
-  //   final prefs = await SharedPreferences.getInstance();
-  //   await prefs.setInt('${phone}_active_status', newStatus == 'Active' ? 1 : 0);
-  //
-  //   // Update on server
-  //   await API.updateUserStatus(phone, newStatus);
-  // }
-
   Future<void> _updateUserRecordingStatus(int index, String newStatus) async {
     final user = _userList[index];
     final phone = user['mobileno'];
-
     setState(() {
       _userList[index]['recordingStatus'] = newStatus == 'Recording' ? 1 : 0;
     });
 
-    // Save to local storage
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('${phone}_recording_status', newStatus == 'Recording' ? 1 : 0);
 
-    // Update on server
     await API.updateCallStatus(phone, newStatus);
   }
-
-
 
   Future<void> _fetchUserDetails() async {
     setState(() {
       _isFetchingUser = true;
-      _userList = [];
     });
 
-    final response = await API.getCallDetailsUser();
-
-    setState(() {
-      _isFetchingUser = false;
+    try {
+      final response = await API.getCallDetailsUser();
       if (response != null) {
-        _userList = response;
+        for (var user in response) {
+          final phoneNumber = user['mobileno'];
+          final accessNumbers = await API.getAccessNumberByUser(phoneNumber);
+          user['selectedNumbers'] = accessNumbers ?? [];
+        }
+        setState(() {
+          _userList = response;
+        });
       }
-    });
+    } catch (e) {
+      print("Error fetching user details: $e");
+    } finally {
+      setState(() {
+        _isFetchingUser = false;
+      });
+    }
   }
-
-
-
 
   @override
   Widget build(BuildContext context) {
@@ -904,7 +984,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
                       Tab(icon: Icon(Icons.person_pin), text: 'Get User'),
                       Tab(icon: Icon(Icons.phone_in_talk), text: 'Active Calls'),
                       Tab(icon: Icon(Icons.history), text: 'Recent Calls'),
-
                     ],
                   ),
                   Expanded(
@@ -960,7 +1039,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
     if (_activeCalls.isEmpty) {
       return _buildEmptyState(icon: Icons.phone_disabled, title: 'No active calls', subtitle: 'Calls will appear here when they start');
     }
-
     return ListView.builder(
       itemCount: _activeCalls.length,
       itemBuilder: (context, index) {
@@ -974,7 +1052,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
     if (_recentCalls.isEmpty) {
       return _buildEmptyState(icon: Icons.history, title: 'No recent calls', subtitle: 'Completed calls will appear here');
     }
-
     return ListView.builder(
       itemCount: _recentCalls.length,
       itemBuilder: (context, index) {

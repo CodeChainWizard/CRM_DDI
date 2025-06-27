@@ -175,6 +175,22 @@ class API {
     }
   }
 
+  static Future<List<Map<String, dynamic>>?> getCallNumberAccess() async {
+    try {
+      final response = await http.get(Uri.parse("$_baseUrl/api/recording_mobile/"));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body) as List;
+        return data.map((item) => item as Map<String, dynamic>).toList();
+      } else {
+        print("Failed to load Number of Access user: ${response.statusCode}");
+        return null;
+      }
+    } catch (e) {
+      print("Error fetching call number: $e");
+      return null;
+    }
+  }
+
 
   static Future<bool> updateUserStatus(String mobileNo, Map<String, dynamic> statusData) async {
     try {
@@ -193,7 +209,62 @@ class API {
     }
   }
 
+  static Future<Map<String, dynamic>?> sendSelectedNumbers(String phoneNumber, List<String> selectedNumbers) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/access/$phoneNumber/'),
+        headers: <String, String>{
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+        body: jsonEncode(<String, dynamic>{
+          'access_mobile': selectedNumbers,
+        }),
+      );
 
+      print("PAYLOAD ACCESS: $selectedNumbers");
+
+
+      if (response.statusCode == 201) {
+        print("User Access: ${response.body}");
+        return jsonDecode(response.body);
+      } else {
+        print('Failed to send selected numbers: ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      print('Error sending selected numbers: $e');
+      return null;
+    }
+  }
+
+
+  static Future<Map<String, dynamic>?> DeleteSelectedNumbers(String phoneNumber, List<String> selectedNumbers) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('$_baseUrl/api/access/$phoneNumber/'),
+        headers: <String, String>{
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+        body: jsonEncode(<String, dynamic>{
+          'access_mobile': selectedNumbers,
+        }),
+      );
+
+      print("PAYLOAD ACCESS: $selectedNumbers");
+
+
+      if (response.statusCode == 200) {
+        print("User Access: ${response.body}");
+        return jsonDecode(response.body);
+      } else {
+        print('Failed to send selected numbers: ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      print('Error sending selected numbers: $e');
+      return null;
+    }
+  }
 
   static Future<List<Map<String, dynamic>>?> getCallDetails({required int page, int limit = 0}) async {
     try {
@@ -277,6 +348,30 @@ class API {
     } catch (e) {
       print("Backend connection failed: $e");
       return false;
+    }
+  }
+
+  static Future<List<String>?> getAccessNumberByUser(String phoneNumber) async {
+    try {
+      final response = await http.get(Uri.parse("$_baseUrl/api/access/$phoneNumber/"));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        // Expecting: { "access_mobile": ["+9119033020277"] }
+        if (data is Map && data['access_mobile'] is List) {
+          return List<String>.from(data['access_mobile']);
+        } else {
+          print("Unexpected response format: $data");
+          return null;
+        }
+      } else {
+        print("HTTP error: ${response.statusCode}");
+        return null;
+      }
+    } catch (e) {
+      print("Access get Number error: $phoneNumber - $e");
+      return null;
     }
   }
 

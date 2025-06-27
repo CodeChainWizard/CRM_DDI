@@ -135,6 +135,34 @@ class _CallListenerPageState extends State<CallListenerPage>
     }
   }
 
+  Future<bool?> _getUserRecordingStatus(String phoneNumber) async {
+    try {
+      final response = await API.getCallDetailsByNumber(phoneNumber);
+      if (response != null && response.containsKey('recording')) {
+        return response['recording'] == true;
+      }
+      return false;
+    } catch (e) {
+      _logger.severe('Error getting user recording status', e);
+      return null;
+    }
+  }
+
+  void _handleApiCallResult(bool success, Duration duration) {
+    _logger.info('API call completed with success: $success');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success
+              ? "Call data sent successfully!\nDuration: ${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}"
+              : "Failed to send call data"),
+          backgroundColor: success ? Colors.green : Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
   Future<void> _cleanupResources() async {
     _logger.info('Cleaning up resources...');
     try {
@@ -368,37 +396,29 @@ class _CallListenerPageState extends State<CallListenerPage>
     _logger.info('=== CALL ENDED ===');
 
     if (callStartTime == null || !isCallActive || _apiCallSent) {
-      print(
-          "ERROR: No active call to end, missing call start time, or API call already sent");
-      print(
-          "callStartTime: $callStartTime, isCallActive: $isCallActive, apiCallSent: $_apiCallSent");
+      print("ERROR: No active call to end, missing call start time, or API call already sent");
       return;
     }
 
-
-    print("isCallActive Checker: $isCallActive");
-    callEndTime = DateTime.now();
-    final duration = callEndTime!.difference(callStartTime!);
-    final durationInSeconds = duration.inSeconds;
-    final finalContactName = lastContactName ?? contactName;
-    final finalNumber = lastNumber ?? displayNumber;
-
-    print("=== CALL DURATION CALCULATION ===");
-    print("Call Start Time: ${callStartTime!.toIso8601String()}");
-    print("Call End Time: ${callEndTime!.toIso8601String()}");
-    print("Total Duration: $durationInSeconds seconds");
-    print("Final Contact Name: $finalContactName");
-    print("Final Number: $finalNumber");
-
     try {
-      await _audioStreamSender?.stopRecording();
-      final myDisplayNumber = _phoneNumber;
-      final senderNumber =
-      isIncomingCall ? finalNumber : myDisplayNumber;
-      final receiverNumber =
-      isIncomingCall ? myDisplayNumber : finalNumber;
+      // Get user's recording status
+      final userRecordingStatus = await _getUserRecordingStatus(_phoneNumber);
+      final shouldSendRecording = userRecordingStatus ?? false;
 
-      await WebSocketHelper.sendMessage({
+      callEndTime = DateTime.now();
+      final duration = callEndTime!.difference(callStartTime!);
+      final durationInSeconds = duration.inSeconds;
+      final finalContactName = lastContactName ?? contactName;
+      final finalNumber = lastNumber ?? displayNumber;
+
+      await _audioStreamSender?.stopRecording();
+
+      final myDisplayNumber = _phoneNumber;
+      final senderNumber = isIncomingCall ? finalNumber : myDisplayNumber;
+      final receiverNumber = isIncomingCall ? myDisplayNumber : finalNumber;
+
+      // Prepare basic call data
+      final callData = {
         'type': 'call_ended',
         'callId': currentCallId,
         'senderNumber': senderNumber,
@@ -410,46 +430,81 @@ class _CallListenerPageState extends State<CallListenerPage>
         'timestamp': DateTime.now().toIso8601String(),
         'status': 'Ended',
         'isIncoming': isIncomingCall,
-      });
+      };
 
-      print("WebSocket call ended message sent");
+      // Only attempt to send recording if enabled and file exists
+      if (shouldSendRecording) {
+        try {
+          final audioFile = await getLatestCallRecording();
+          if (audioFile != null && await audioFile.exists()) {
+            callData['audio_file'] = await getAudioFileUrl(currentCallId!);
 
-      final audioFile = await getLatestCallRecording();
-      if (audioFile != null && audioFile.existsSync()) {
-        print("=== SENDING CALL DATA TO API ===");
-        print("Audio file: ${audioFile.path}");
+            // Send to WebSocket
+            await WebSocketHelper.sendMessage(callData);
 
-        final success = await API.sendCallData(
-          callId: currentCallId ?? generateRandomCallId(),
-          senderNumber: senderNumber,
-          receiverNumber: receiverNumber,
-          callStartTime: callStartTime!.toLocal(),
-          duration: duration,
-          audioFile: audioFile,
-        ).timeout(Duration(seconds: 30), onTimeout: (){
-          _logger.warning('API call timed out');
-          return false;
-        });
+            // Send to API
+            final success = await API.sendCallData(
+              callId: currentCallId ?? generateRandomCallId(),
+              senderNumber: senderNumber,
+              receiverNumber: receiverNumber,
+              callStartTime: callStartTime!.toLocal(),
+              duration: duration,
+              audioFile: audioFile,
+            ).timeout(const Duration(seconds: 30), onTimeout: () {
+              _logger.warning('API call timed out');
+              return false;
+            });
 
-        _logger.info('API call completed with success: $success');
-        print("API call result: $success");
+            _handleApiCallResult(success, duration);
+          } else {
+            // Recording enabled but file not found
+            await WebSocketHelper.sendMessage(callData);
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text("Recording enabled but no audio file found"),
+                  backgroundColor: Colors.orange,
+                ),
+              );
+            }
+          }
+        } catch (e) {
+          _logger.severe('Error processing recording', e);
+          // Fallback to sending without recording
+          await WebSocketHelper.sendMessage(callData);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text("Error processing recording: ${e.toString()}"),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+        }
+      } else {
+        // Recording disabled - send basic call data
+        await WebSocketHelper.sendMessage(callData);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(success
-                  ? "Call data sent successfully!\nDuration: ${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}"
-                  : "Failed to send call data"),
-              backgroundColor: success ? Colors.green : Colors.red,
-              duration: const Duration(seconds: 4),
+            const SnackBar(
+              content: Text("Call data sent (recording disabled)"),
+              backgroundColor: Colors.blue,
             ),
           );
         }
       }
     } catch (e) {
-      print("ERROR: Exception in handleCallEnded: $e");
+      _logger.severe('Error in handleCallEnded', e);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Error ending call: ${e.toString()}"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     } finally {
       await WebRTCHelper.cleanup();
-      await Future.delayed(const Duration(milliseconds: 10));
       _resetCallVariables();
     }
   }
@@ -706,24 +761,15 @@ class _CallListenerPageState extends State<CallListenerPage>
   }
 
   Future<File?> getLatestCallRecording() async {
-    if (Platform.isIOS) {
-      print("iOS does not support accessing system call recordings.");
-      setState(() {
-        callStatus = "System call recording not supported on iOS.";
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("System call recording not supported on iOS."),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-      return null;
-    }
     try {
-      await Future.delayed(const Duration(seconds: 5));
-      final today = DateTime.now();
+      if (Platform.isIOS) {
+        _logger.info("iOS does not support accessing system call recordings.");
+        return null;
+      }
+
+      // Add delay to ensure recording is saved
+      await Future.delayed(const Duration(seconds: 2));
+
       final possiblePaths = [
         '/storage/emulated/0/CallRecordings',
         '/storage/emulated/0/Recordings/CallRecordings',
@@ -734,50 +780,29 @@ class _CallListenerPageState extends State<CallListenerPage>
       ];
 
       for (String path in possiblePaths) {
-        final directory = Directory(path);
-        print("Checking directory: $path");
-        if (!await directory.exists()) {
-          print("Directory does not exist: $path");
-          continue;
+        try {
+          final directory = Directory(path);
+          if (!await directory.exists()) continue;
+
+          final files = await directory.list()
+              .where((entity) => entity is File)
+              .cast<File>()
+              .toList();
+
+          if (files.isEmpty) continue;
+
+          // Sort by modification date (newest first)
+          files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+
+          // Return the most recent file
+          return files.first;
+        } catch (e) {
+          _logger.warning('Error checking directory $path', e);
         }
-        final files = directory.listSync().whereType<File>().toList();
-        if (files.isEmpty) {
-          print("No files found in $path");
-          continue;
-        }
-        final todayFiles = files.where((file) {
-          final modified = file.lastModifiedSync();
-          return modified.year == today.year &&
-              modified.month == today.month &&
-              modified.day == today.day;
-        }).toList();
-        if (todayFiles.isEmpty) {
-          print("No files from today in $path");
-          continue;
-        }
-        todayFiles.sort(
-              (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
-        );
-        final latestFile = todayFiles.first;
-        if (callStartTime != null) {
-          final fileModifiedTime = await latestFile.lastModified();
-          final diffMinutes =
-              fileModifiedTime.difference(callStartTime!).inMinutes;
-          print("Time diff: $diffMinutes minutes");
-          if (diffMinutes.abs() <= 5) {
-            print("Matched recording file: ${latestFile.path}");
-            return latestFile;
-          } else {
-            print("Latest file is from today but not within time range.");
-          }
-        }
-        print("Returning today's latest recording: ${latestFile.path}");
-        return latestFile;
       }
-      print("No call recording found from today.");
       return null;
     } catch (e) {
-      print("Error accessing call recordings: $e");
+      _logger.severe('Error in getLatestCallRecording', e);
       return null;
     }
   }
