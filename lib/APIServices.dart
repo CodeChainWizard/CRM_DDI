@@ -6,6 +6,48 @@ import 'package:http/http.dart' as http;
 class API {
   static final String _baseUrl = "http://192.168.1.3:8001";
 
+  static Future<Map<String, dynamic>?> sendOtp(String phoneNumber) async {
+    try {
+      final response = await http.post(
+        Uri.parse('http://192.168.1.3:8000/api/send_otp'),
+        body: {'phone_number': phoneNumber},
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        return {'error': 'Failed to send OTP: ${response.statusCode}'};
+      }
+    } catch (e) {
+      return {'error': 'Exception: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>?> verifyOtp({
+    required String phoneNumber,
+    required String verificationId,
+    required String otp,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('http://192.168.1.3:8000/api/verify_otp'),
+        body: {
+          'phone_number': phoneNumber,
+          'verification_id': verificationId,
+          'otp': otp,
+        },
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        return {'error': 'OTP verification failed: ${response.statusCode}'};
+      }
+    } catch (e) {
+      return {'error': 'Exception: $e'};
+    }
+  }
+
   static Future<bool> sendCallData({
     required String callId,
     required String senderNumber,
@@ -191,23 +233,28 @@ class API {
     }
   }
 
-
   static Future<bool> updateUserStatus(String mobileNo, Map<String, dynamic> statusData) async {
     try {
       final url = Uri.parse("$_baseUrl/api/users/$mobileNo/");
-
       final response = await http.put(
         url,
         headers: {"Content-Type": "application/json"},
         body: jsonEncode(statusData),
       );
-
-      return response.statusCode == 200;
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        print("Successfully updated user status: $data");
+        return true;
+      } else {
+        print("Failed to update user status: ${response.statusCode}");
+        return false;
+      }
     } catch (e) {
       print("Error updating status: $e");
       return false;
     }
   }
+
 
   static Future<Map<String, dynamic>?> sendSelectedNumbers(String phoneNumber, List<String> selectedNumbers) async {
     try {
@@ -236,7 +283,6 @@ class API {
       return null;
     }
   }
-
 
   static Future<Map<String, dynamic>?> DeleteSelectedNumbers(String phoneNumber, List<String> selectedNumbers) async {
     try {
