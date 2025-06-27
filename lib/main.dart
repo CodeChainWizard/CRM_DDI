@@ -636,15 +636,21 @@ class _CallListenerPageState extends State<CallListenerPage>
     }
   }
 
-  Future<void> handleCallEnded(PhoneState phoneState, String displayNumber,String contactName,) async {
+  Future<void> handleCallEnded(PhoneState phoneState, String displayNumber, String contactName) async {
     _logger.info('=== CALL ENDED ===');
+
+    // Early return if no active call or API call already sent
     if (callStartTime == null || !isCallActive || _apiCallSent) {
-      _logger.warning(
-        "No active call to end, missing call start time, or API call already sent",
-      );
+      _logger.warning("No active call to end, missing call start time, or API call already sent");
       return;
     }
+
     try {
+      // Mark API call as sent immediately to prevent duplicate calls
+      setState(() {
+        _apiCallSent = true;
+      });
+
       final userRecordingStatus = await _getUserRecordingStatus(_phoneNumber);
       final shouldSendRecording = userRecordingStatus ?? false;
       callEndTime = DateTime.now();
@@ -652,10 +658,13 @@ class _CallListenerPageState extends State<CallListenerPage>
       final durationInSeconds = duration.inSeconds;
       final finalContactName = lastContactName ?? contactName;
       final finalNumber = lastNumber ?? displayNumber;
+
       await _audioStreamSender?.stopRecording();
+
       final myDisplayNumber = _phoneNumber;
       final senderNumber = isIncomingCall ? finalNumber : myDisplayNumber;
       final receiverNumber = isIncomingCall ? myDisplayNumber : finalNumber;
+
       final callData = {
         'type': 'call_ended',
         'callId': currentCallId,
@@ -669,6 +678,7 @@ class _CallListenerPageState extends State<CallListenerPage>
         'status': 'Ended',
         'isIncoming': isIncomingCall,
       };
+
       Future<void> safeSendWebSocketMessage(Map<String, dynamic> data) async {
         try {
           if (!WebSocketHelper.isConnected) {
@@ -679,58 +689,48 @@ class _CallListenerPageState extends State<CallListenerPage>
             await WebSocketHelper.sendMessage(data);
             _logger.info("WebSocket message sent successfully");
           } else {
-            _logger.warning(
-              "Failed to send WebSocket message - connection not established",
-            );
+            _logger.warning("Failed to send WebSocket message - connection not established");
           }
         } catch (e) {
           _logger.severe("Error sending WebSocket message", e);
         }
       }
 
+      // Always send the call ended message via WebSocket
       await safeSendWebSocketMessage(callData);
-      if (shouldSendRecording && !_apiCallSent) {
+
+      if (shouldSendRecording) {
         try {
-          await Future.delayed(const Duration(seconds: 5));
+          // Add delay to ensure recording is saved
+          await Future.delayed(const Duration(seconds: 2));
+
           final audioFile = await getLatestCallRecording();
-          if (audioFile != null) {
-            bool exists = await audioFile.exists();
-            if (exists) {
-              callData['audio_file'] = await getAudioFileUrl(currentCallId!);
-              await safeSendWebSocketMessage(callData);
-              final success = await API
-                  .sendCallData(
-                    callId: currentCallId ?? generateRandomCallId(),
-                    senderNumber: senderNumber,
-                    receiverNumber: receiverNumber,
-                    callStartTime: callStartTime!.toLocal(),
-                    duration: duration,
-                    audioFile: audioFile,
-                  )
-                  .timeout(
-                    const Duration(seconds: 30),
-                    onTimeout: () {
-                      _logger.warning('API call timed out');
-                      return false;
-                    },
-                  );
-              _handleApiCallResult(success, duration);
-              _apiCallSent = true;
-            } else {
-              _logger.warning(
-                "Audio file does not exist at path: ${audioFile.path}",
-              );
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("Recording enabled but no audio file found"),
-                    backgroundColor: Colors.orange,
-                  ),
-                );
-              }
-            }
+          if (audioFile != null && await audioFile.exists()) {
+            // Add audio file URL to call data
+            callData['audio_file'] = await getAudioFileUrl(currentCallId!);
+
+            // Send updated call data with audio file reference
+            await safeSendWebSocketMessage(callData);
+
+            // Make the API call with a timeout
+            final success = await API.sendCallData(
+              callId: currentCallId!,
+              senderNumber: senderNumber,
+              receiverNumber: receiverNumber,
+              callStartTime: callStartTime!.toLocal(),
+              duration: duration,
+              audioFile: audioFile,
+            ).timeout(
+              const Duration(seconds: 30),
+              onTimeout: () {
+                _logger.warning('API call timed out');
+                return false;
+              },
+            );
+
+            _handleApiCallResult(success, duration);
           } else {
-            _logger.warning("No audio file retrieved");
+            _logger.warning("Recording enabled but no audio file found");
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
@@ -774,6 +774,7 @@ class _CallListenerPageState extends State<CallListenerPage>
       _resetCallVariables();
     }
   }
+
 
   String generateRandomCallId() {
     final random = Random();
