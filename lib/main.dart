@@ -74,26 +74,25 @@ class _CallListenerPageState extends State<CallListenerPage>
   String _phoneNumber = '';
   late AnimationController _animationController;
   late Animation<Color?> _colorAnimation;
-
+  final TextEditingController _numberController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    // WidgetsBinding.instance.addObserver(this as WidgetsBindingObserver);
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 500),
     );
-    _colorAnimation =
-        ColorTween(begin: Colors.orange, end: Colors.green)
-            .animate(_animationController);
+    _colorAnimation = ColorTween(
+      begin: Colors.orange,
+      end: Colors.green,
+    ).animate(_animationController);
     checkAndRequestPermissions();
     _loadPhoneNumberIntoLocalStorage();
   }
 
   @override
   void dispose() {
-    // WidgetsBinding.instance.removeObserver(this as WidgetsBindingObserver);
     _animationController.dispose();
     _phoneStateSubscription?.cancel();
     _audioStreamSender?.dispose();
@@ -153,9 +152,13 @@ class _CallListenerPageState extends State<CallListenerPage>
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(success
-              ? "Call data sent successfully!\nDuration: ${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}"
-              : "Failed to send call data"),
+          content: Text(
+            success
+                ? "Call data sent successfully!\nDuration: ${duration
+                .inMinutes}:${(duration.inSeconds % 60).toString().padLeft(
+                2, '0')}"
+                : "Failed to send call data",
+          ),
           backgroundColor: success ? Colors.green : Colors.red,
           duration: const Duration(seconds: 4),
         ),
@@ -166,21 +169,13 @@ class _CallListenerPageState extends State<CallListenerPage>
   Future<void> _cleanupResources() async {
     _logger.info('Cleaning up resources...');
     try {
-      // Cancel and nullify all subscriptions
       await _phoneStateSubscription?.cancel();
       _phoneStateSubscription = null;
-
-      // Dispose of audio resources
       await _audioStreamSender?.dispose();
       _audioStreamSender = null;
-
-      // Clean up WebRTC and WebSocket connections
       await WebRTCHelper.cleanup();
       await WebSocketHelper.disconnect();
-
-      // Reset all state variables
       _resetCallVariables();
-
       _logger.info('Resource cleanup completed');
     } catch (e, stack) {
       _logger.severe('Error during cleanup', e, stack);
@@ -190,55 +185,171 @@ class _CallListenerPageState extends State<CallListenerPage>
   Future<void> _loadPhoneNumberIntoLocalStorage() async {
     final pref = await SharedPreferences.getInstance();
     final storeNumber = pref.getString("my_phone_number");
+    final hasShownPopup = pref.getBool("has_shown_number_popup") ?? false;
+    setState(() {
+      _hasShownNumberSelectionPopup = hasShownPopup;
+    });
     if (storeNumber != null && storeNumber.isNotEmpty) {
       setState(() {
         _phoneNumber = storeNumber;
       });
+      print("Loaded phone number from storage: $storeNumber");
     } else {
-      _fetchNumber();
+      print("No phone number found in storage, attempting to fetch...");
+      await _fetchNumber();
     }
   }
 
-  void _fetchNumber() async {
-    if (_hasShownNumberSelectionPopup) {
-      return;
+  Future<void> _fetchNumber() async {
+    try {
+      print("Attempting to fetch phone number...");
+      final result = await _getMyPhoneNumber();
+      if (!mounted) return;
+      if (result == null || result.isEmpty) {
+        if (!_hasShownNumberSelectionPopup) {
+          print("Showing phone number selection popup...");
+          await _showPhoneNumberSelectionDialog();
+        } else {
+          print("Phone number popup already shown, skipping...");
+        }
+      } else {
+        print("Phone number fetched successfully: $result");
+        await _savePhoneNumber(result);
+      }
+    } catch (e) {
+      print("Error in _fetchNumber: $e");
+      if (!_hasShownNumberSelectionPopup && mounted) {
+        await _showPhoneNumberSelectionDialog();
+      }
     }
-    final result = await _getMyPhoneNumber();
-    if (!mounted) return;
-    if (result == null || result.isEmpty) {
-      await showDialog(
-        context: context,
-        builder: (BuildContext context) {
-          return AlertDialog(
-            title: const Text('Select Phone Number'),
-            content: const Text('Please select your phone number.'),
-            actions: <Widget>[
-              TextButton(
-                child: const Text('OK'),
-                onPressed: () {
-                  Navigator.of(context).pop();
-                },
+  }
+
+  Future<void> _showPhoneNumberSelectionDialog() async {
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        final TextEditingController phoneController = TextEditingController();
+        return AlertDialog(
+          title: const Text('Enter Phone Number'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Please enter your phone number to continue:'),
+              const SizedBox(height: 16),
+              TextField(
+                controller: phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(
+                  labelText: 'Phone Number',
+                  hintText: '+91XXXXXXXXXX',
+                  border: OutlineInputBorder(),
+                ),
               ),
             ],
-          );
-        },
-      );
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: const Text('Save'),
+              onPressed: () async {
+                final phoneNumber = phoneController.text.trim();
+                if (phoneNumber.isNotEmpty) {
+                  await _savePhoneNumber(phoneNumber);
+                  Navigator.of(context).pop();
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please enter a valid phone number'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        );
+      },
+    );
+    await _markPopupAsShown();
+  }
+
+  Future<void> _savePhoneNumber(String phoneNumber) async {
+    try {
+      final pref = await SharedPreferences.getInstance();
+      await pref.setString("my_phone_number", phoneNumber);
+      setState(() {
+        _phoneNumber = phoneNumber;
+      });
+      print("Phone number saved: $phoneNumber");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Phone number saved: $phoneNumber'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print("Error saving phone number: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error saving phone number: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _markPopupAsShown() async {
+    try {
+      final pref = await SharedPreferences.getInstance();
+      await pref.setBool("has_shown_number_popup", true);
       setState(() {
         _hasShownNumberSelectionPopup = true;
       });
-    } else {
-      setState(() async {
-        final pref = await SharedPreferences.getInstance();
-        pref.setString("my_phone_number", result);
-        _phoneNumber = result;
+      print("Marked popup as shown");
+    } catch (e) {
+      print("Error marking popup as shown: $e");
+    }
+  }
+
+  Future<void> _resetPhoneNumberData() async {
+    try {
+      final pref = await SharedPreferences.getInstance();
+      await pref.remove("my_phone_number");
+      await pref.remove("has_shown_number_popup");
+      setState(() {
+        _phoneNumber = '';
+        _hasShownNumberSelectionPopup = false;
       });
+      print("Phone number data reset");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Phone number data reset'),
+            backgroundColor: Colors.blue,
+          ),
+        );
+      }
+      await _fetchNumber();
+    } catch (e) {
+      print("Error resetting phone number data: $e");
     }
   }
 
   Future<void> _initializeAudioStreamSender() async {
     try {
       _audioStreamSender = AudioStreamSender(
-          'ws://192.168.1.3:8001/api/live_audio?callId=$currentCallId');
+        'ws://192.168.1.3:8001/api/live_audio?callId=$currentCallId',
+      );
       await _audioStreamSender?.init();
     } catch (e) {
       print("Error initializing AudioStreamSender: $e");
@@ -261,19 +372,32 @@ class _CallListenerPageState extends State<CallListenerPage>
       );
       for (var contact in contacts) {
         for (var phone in contact.phones) {
-          String cleanedContactNumber = phone.number.replaceAll(RegExp(r'[^\d+]'), '');
-          String cleanedIncomingNumber = phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
+          String cleanedContactNumber = phone.number.replaceAll(
+            RegExp(r'[^\d+]'),
+            '',
+          );
+          String cleanedIncomingNumber = phoneNumber.replaceAll(
+            RegExp(r'[^\d+]'),
+            '',
+          );
           if (cleanedContactNumber == cleanedIncomingNumber ||
-              cleanedContactNumber.endsWith(cleanedIncomingNumber.substring(
+              cleanedContactNumber.endsWith(
+                cleanedIncomingNumber.substring(
                   cleanedIncomingNumber.length > 10
                       ? cleanedIncomingNumber.length - 10
-                      : 0)) ||
-              cleanedIncomingNumber.endsWith(cleanedContactNumber.substring(
+                      : 0,
+                ),
+              ) ||
+              cleanedIncomingNumber.endsWith(
+                cleanedContactNumber.substring(
                   cleanedContactNumber.length > 10
                       ? cleanedContactNumber.length - 10
-                      : 0))) {
+                      : 0,
+                ),
+              )) {
             print(
-                "Contact found: ${contact.displayName} for number: $phoneNumber");
+              "Contact found: ${contact.displayName} for number: $phoneNumber",
+            );
             return contact.displayName;
           }
         }
@@ -285,36 +409,40 @@ class _CallListenerPageState extends State<CallListenerPage>
     return "Unknown";
   }
 
-  Future<void> handleIncomingCall(
-      String displayNumber, String contactName) async {
-    if (displayNumber == "Unknown") return;
 
+  Future<void> handleIncomingCall(String displayNumber,
+      String contactName) async {
+    if (displayNumber == "Unknown") return;
     print("=== INCOMING CALL ===");
     print("Number: $displayNumber");
     print("Contact: $contactName");
+
+    // Reset the API call flag for a new call event
+    _apiCallSent = false;
+
     if (!isCallActive) {
       _resetCallVariables();
       callStartTime = DateTime.now();
       callEndTime = null;
       lastNumber = displayNumber;
       lastContactName = contactName;
-      currentCallId = DateTime.now().millisecondsSinceEpoch.toString();
+      currentCallId = DateTime
+          .now()
+          .millisecondsSinceEpoch
+          .toString();
       isCallActive = true;
       isIncomingCall = true;
-      _apiCallSent = false;
       print("Call tracking started - Incoming call");
       print("Start time: ${callStartTime!.toIso8601String()}");
       print("Call ID: $currentCallId");
       await _initializeAudioStreamSender();
       await _initializeLiveStream();
     }
-
     try {
       final myDisplayNumber = _phoneNumber;
       final senderNumber = displayNumber;
       final receiverNumber = myDisplayNumber;
       final audioFileUrl = await getAudioFileUrl(currentCallId!);
-
       await WebSocketHelper.sendMessage({
         'type': 'incoming_call',
         'callId': currentCallId,
@@ -327,28 +455,28 @@ class _CallListenerPageState extends State<CallListenerPage>
         'isIncoming': isIncomingCall,
         'audio_file': audioFileUrl,
       });
-
       setState(() {
         callerInfo = contactName != "Unknown" ? contactName : displayNumber;
         callStatus = "INCOMING CALL!\nFrom: $callerInfo";
       });
-
       print("WebSocket incoming call message sent");
     } catch (e) {
       print("Error handling incoming call: $e");
     }
   }
 
-  Future<void> handleCallStarted(
-      String displayNumber, String contactName) async {
+  Future<void> handleCallStarted(String displayNumber,
+      String contactName) async {
     if (displayNumber == "Unknown") {
       print("Skipping processing for unknown number");
       return;
     }
-
     print("=== CALL STARTED ===");
     print("Number: $displayNumber");
     print("Contact: $contactName");
+
+    // Reset the API call flag for a new call event
+    _apiCallSent = false;
 
     if (!isCallActive) {
       _resetCallVariables();
@@ -356,23 +484,23 @@ class _CallListenerPageState extends State<CallListenerPage>
       callEndTime = null;
       lastNumber = displayNumber;
       lastContactName = contactName;
-      currentCallId = DateTime.now().millisecondsSinceEpoch.toString();
+      currentCallId = DateTime
+          .now()
+          .millisecondsSinceEpoch
+          .toString();
       isCallActive = true;
       isIncomingCall = false;
-      _apiCallSent = false;
       print("Call tracking started - Outgoing call");
       print("Start time: ${callStartTime!.toIso8601String()}");
       print("Call ID: $currentCallId");
       await _initializeAudioStreamSender();
     }
-
     try {
       await _audioStreamSender?.startRecording();
       final myDisplayNumber = _phoneNumber;
       final senderNumber = myDisplayNumber;
       final receiverNumber = displayNumber;
       final audioFileUrl = await getAudioFileUrl(currentCallId!);
-
       await WebSocketHelper.sendMessage({
         'type': 'call_started',
         'callId': currentCallId,
@@ -385,22 +513,22 @@ class _CallListenerPageState extends State<CallListenerPage>
         'isIncoming': isIncomingCall,
         'audio_file': audioFileUrl,
       });
-
       print("WebSocket call started message sent");
     } catch (e) {
       print("Error sending call started notification: $e");
     }
   }
 
-  Future<void> handleCallEnded(PhoneState phoneState, String displayNumber, String contactName) async {
+  Future<void> handleCallEnded(PhoneState phoneState, String displayNumber,
+      String contactName) async {
     _logger.info('=== CALL ENDED ===');
     if (callStartTime == null || !isCallActive || _apiCallSent) {
-      _logger.warning("No active call to end, missing call start time, or API call already sent");
+      _logger.warning(
+          "No active call to end, missing call start time, or API call already sent");
       return;
     }
 
     try {
-      // Get user's recording status
       final userRecordingStatus = await _getUserRecordingStatus(_phoneNumber);
       final shouldSendRecording = userRecordingStatus ?? false;
       callEndTime = DateTime.now();
@@ -408,14 +536,11 @@ class _CallListenerPageState extends State<CallListenerPage>
       final durationInSeconds = duration.inSeconds;
       final finalContactName = lastContactName ?? contactName;
       final finalNumber = lastNumber ?? displayNumber;
-
       await _audioStreamSender?.stopRecording();
-
       final myDisplayNumber = _phoneNumber;
       final senderNumber = isIncomingCall ? finalNumber : myDisplayNumber;
       final receiverNumber = isIncomingCall ? myDisplayNumber : finalNumber;
 
-      // Prepare basic call data
       final callData = {
         'type': 'call_ended',
         'callId': currentCallId,
@@ -430,48 +555,63 @@ class _CallListenerPageState extends State<CallListenerPage>
         'isIncoming': isIncomingCall,
       };
 
-      // Helper function to safely send WebSocket messages
       Future<void> safeSendWebSocketMessage(Map<String, dynamic> data) async {
         try {
           if (!WebSocketHelper.isConnected) {
             _logger.info("Attempting to reconnect WebSocket...");
             await WebSocketHelper.connect();
           }
-
           if (WebSocketHelper.isConnected) {
             await WebSocketHelper.sendMessage(data);
             _logger.info("WebSocket message sent successfully");
           } else {
-            _logger.warning("Failed to send WebSocket message - connection not established");
+            _logger.warning(
+                "Failed to send WebSocket message - connection not established");
           }
         } catch (e) {
           _logger.severe("Error sending WebSocket message", e);
         }
       }
 
-      // Send WebSocket message regardless of recording status
       await safeSendWebSocketMessage(callData);
 
-      // Only attempt API call if not already sent and recording is enabled
-      if (!_apiCallSent && shouldSendRecording) {
+      if (shouldSendRecording && !_apiCallSent) {
         try {
+          await Future.delayed(const Duration(seconds: 5));
           final audioFile = await getLatestCallRecording();
-          if (audioFile != null && await audioFile.exists()) {
-            final success = await API.sendCallData(
-              callId: currentCallId ?? generateRandomCallId(),
-              senderNumber: senderNumber,
-              receiverNumber: receiverNumber,
-              callStartTime: callStartTime!.toLocal(),
-              duration: duration,
-              audioFile: audioFile,
-            ).timeout(const Duration(seconds: 30), onTimeout: () {
-              _logger.warning('API call timed out');
-              return false;
-            });
-
-            _handleApiCallResult(success, duration);
-            _apiCallSent = true; // Mark API call as sent
+          if (audioFile != null) {
+            bool exists = await audioFile.exists();
+            if (exists) {
+              callData['audio_file'] = await getAudioFileUrl(currentCallId!);
+              await safeSendWebSocketMessage(callData);
+              final success = await API.sendCallData(
+                callId: currentCallId ?? generateRandomCallId(),
+                senderNumber: senderNumber,
+                receiverNumber: receiverNumber,
+                callStartTime: callStartTime!.toLocal(),
+                duration: duration,
+                audioFile: audioFile,
+              ).timeout(const Duration(seconds: 30), onTimeout: () {
+                _logger.warning('API call timed out');
+                return false;
+              });
+              _handleApiCallResult(success, duration);
+              _apiCallSent =
+              true; // Set the flag to true after the API call is made
+            } else {
+              _logger.warning(
+                  "Audio file does not exist at path: ${audioFile.path}");
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text("Recording enabled but no audio file found"),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+              }
+            }
           } else {
+            _logger.warning("No audio file retrieved");
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
@@ -492,7 +632,7 @@ class _CallListenerPageState extends State<CallListenerPage>
             );
           }
         }
-      } else if (!shouldSendRecording && mounted) {
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text("Call data sent (recording disabled)"),
@@ -516,661 +656,535 @@ class _CallListenerPageState extends State<CallListenerPage>
     }
   }
 
-  // Future<void> handleCallEnded(PhoneState phoneState, String displayNumber, String contactName) async {
-  //   _logger.info('=== CALL ENDED ===');
-  //   if (callStartTime == null || !isCallActive || _apiCallSent) {
-  //     _logger.warning("No active call to end, missing call start time, or API call already sent");
-  //     return;
-  //   }
-  //
-  //   try {
-  //     // Get user's recording status
-  //     final userRecordingStatus = await _getUserRecordingStatus(_phoneNumber);
-  //     final shouldSendRecording = userRecordingStatus ?? false;
-  //     callEndTime = DateTime.now();
-  //     final duration = callEndTime!.difference(callStartTime!);
-  //     final durationInSeconds = duration.inSeconds;
-  //     final finalContactName = lastContactName ?? contactName;
-  //     final finalNumber = lastNumber ?? displayNumber;
-  //
-  //     await _audioStreamSender?.stopRecording();
-  //
-  //     final myDisplayNumber = _phoneNumber;
-  //     final senderNumber = isIncomingCall ? finalNumber : myDisplayNumber;
-  //     final receiverNumber = isIncomingCall ? myDisplayNumber : finalNumber;
-  //
-  //     // Prepare basic call data
-  //     final callData = {
-  //       'type': 'call_ended',
-  //       'callId': currentCallId,
-  //       'senderNumber': senderNumber,
-  //       'receiverNumber': receiverNumber,
-  //       'contactName': finalContactName,
-  //       'startTime': callStartTime!.toIso8601String(),
-  //       'endTime': callEndTime!.toIso8601String(),
-  //       'duration': durationInSeconds,
-  //       'timestamp': DateTime.now().toIso8601String(),
-  //       'status': 'Ended',
-  //       'isIncoming': isIncomingCall,
-  //     };
-  //
-  //     // Helper function to safely send WebSocket messages
-  //     Future<void> safeSendWebSocketMessage(Map<String, dynamic> data) async {
-  //       try {
-  //         if (!WebSocketHelper.isConnected) {
-  //           _logger.info("Attempting to reconnect WebSocket...");
-  //           await WebSocketHelper.connect();
-  //         }
-  //
-  //         if (WebSocketHelper.isConnected) {
-  //           await WebSocketHelper.sendMessage(data);
-  //           _logger.info("WebSocket message sent successfully");
-  //         } else {
-  //           _logger.warning("Failed to send WebSocket message - connection not established");
-  //           // Consider storing the message for later delivery
-  //         }
-  //       } catch (e) {
-  //         _logger.severe("Error sending WebSocket message", e);
-  //         // Handle or store the failed message as needed
-  //       }
-  //     }
-  //
-  //     // Only attempt to send recording if enabled and file exists
-  //     if (shouldSendRecording) {
-  //       try {
-  //         final audioFile = await getLatestCallRecording();
-  //         if (audioFile != null && await audioFile.exists()) {
-  //           callData['audio_file'] = await getAudioFileUrl(currentCallId!);
-  //
-  //           // Send via WebSocket
-  //           await safeSendWebSocketMessage(callData);
-  //
-  //           // Send to API only if not already sent
-  //           if (!_apiCallSent) {
-  //             final success = await API.sendCallData(
-  //               callId: currentCallId ?? generateRandomCallId(),
-  //               senderNumber: senderNumber,
-  //               receiverNumber: receiverNumber,
-  //               callStartTime: callStartTime!.toLocal(),
-  //               duration: duration,
-  //               audioFile: audioFile,
-  //             ).timeout(const Duration(seconds: 30), onTimeout: () {
-  //               _logger.warning('API call timed out');
-  //               return false;
-  //             });
-  //             _handleApiCallResult(success, duration);
-  //             _apiCallSent = true; // Mark API call as sent
-  //           }
-  //         } else {
-  //           // Recording enabled but file not found
-  //           await safeSendWebSocketMessage(callData);
-  //           if (mounted) {
-  //             ScaffoldMessenger.of(context).showSnackBar(
-  //               const SnackBar(
-  //                 content: Text("Recording enabled but no audio file found"),
-  //                 backgroundColor: Colors.orange,
-  //               ),
-  //             );
-  //           }
-  //         }
-  //       } catch (e) {
-  //         _logger.severe('Error processing recording', e);
-  //         // Fallback to sending without recording
-  //         await safeSendWebSocketMessage(callData);
-  //         if (mounted) {
-  //           ScaffoldMessenger.of(context).showSnackBar(
-  //             SnackBar(
-  //               content: Text("Error processing recording: ${e.toString()}"),
-  //               backgroundColor: Colors.orange,
-  //             ),
-  //           );
-  //         }
-  //       }
-  //     } else {
-  //       // Recording disabled - send basic call data
-  //       await safeSendWebSocketMessage(callData);
-  //       if (mounted) {
-  //         ScaffoldMessenger.of(context).showSnackBar(
-  //           const SnackBar(
-  //             content: Text("Call data sent (recording disabled)"),
-  //             backgroundColor: Colors.blue,
-  //           ),
-  //         );
-  //       }
-  //     }
-  //   } catch (e) {
-  //     _logger.severe('Error in handleCallEnded', e);
-  //     if (mounted) {
-  //       ScaffoldMessenger.of(context).showSnackBar(
-  //         SnackBar(
-  //           content: Text("Error ending call: ${e.toString()}"),
-  //           backgroundColor: Colors.red,
-  //         ),
-  //       );
-  //     }
-  //   } finally {
-  //     await WebRTCHelper.cleanup();
-  //     _resetCallVariables();
-  //   }
-  // }
 
+String generateRandomCallId() {
+  final random = Random();
+  return '${DateTime
+      .now()
+      .millisecondsSinceEpoch}_${random.nextInt(100000)}';
+}
 
-
-  String generateRandomCallId() {
-    final random = Random();
-    return '${DateTime.now().millisecondsSinceEpoch}_${random.nextInt(100000)}';
-  }
-
-  Future<void> _initializeLiveStream() async {
-    try {
-      _logger.info('Initializing live stream for call: $currentCallId');
-      final channel = await WebSocketHelper.connect();
-      if (channel == null) {
-        throw Exception('Failed to establish WebSocket connection');
-      }
-      await WebRTCHelper.initializeCaller(currentCallId!, channel);
-      setState(() {
-        _isLiveStreamActive = true;
-      });
-      _logger.info('✅ Live stream initialized for call: $currentCallId');
-    } catch (e, stack) {
-      _logger.severe('❌ Error initializing live stream', e, stack);
-      setState(() {
-        _isLiveStreamActive = false;
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to start live stream: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+Future<void> _initializeLiveStream() async {
+  try {
+    _logger.info('Initializing live stream for call: $currentCallId');
+    final channel = await WebSocketHelper.connect();
+    if (channel == null) {
+      throw Exception('Failed to establish WebSocket connection');
     }
-  }
-
-  void handlePhoneStateChange(PhoneState phoneState) async {
-    try {
-      final String rawNumber = phoneState.number ?? "Unknown";
-      final PhoneStateStatus status = phoneState.status;
-      final String displayNumber = formatPhoneNumber(rawNumber);
-      final String contactName = await getContactName(displayNumber);
-      updateCallUI(contactName, displayNumber, status);
-      logCallEvent(status, contactName, displayNumber);
-
-      print("=== PHONE STATE CHANGE ===");
-      print("Status: $status");
-      print("Number: $displayNumber");
-      print("Contact: $contactName");
-      print("Current call active: $isCallActive");
-
-      switch (status) {
-        case PhoneStateStatus.CALL_INCOMING:
-          await handleIncomingCall(displayNumber, contactName);
-          break;
-        case PhoneStateStatus.CALL_STARTED:
-          await handleCallStarted(displayNumber, contactName);
-          break;
-        case PhoneStateStatus.CALL_ENDED:
-          await handleCallEnded(phoneState, displayNumber, contactName);
-          break;
-        case PhoneStateStatus.NOTHING:
-          if (isCallActive && !_apiCallSent) {
-            print("Call ended detected from NOTHING state");
-            await handleCallEnded(
-                phoneState, lastNumber ?? displayNumber, lastContactName ?? contactName);
-          }
-          break;
-      }
-    } catch (e) {
-      print("Error handling phone state change: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Error processing call: $e"),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  void _resetCallVariables() {
-    print("=== RESETTING CALL VARIABLES ===");
-    callStartTime = null;
-    callEndTime = null;
-    lastNumber = null;
-    lastContactName = null;
-    currentCallId = null;
-    isCallActive = false;
-    isIncomingCall = false;
-    _apiCallSent = false;
-    _isLiveStreamActive = false;
-    callerInfo = "";
-    callStatus = "No active call";
-
-
-    print("All call variables reset");
-  }
-
-  Future<String> getAudioFileUrl(String callId) async {
-    return "http://192.168.1.3:8001/media/audio_files/Call_recording_$callId.m4a";
-  }
-
-  void updateCallUI(
-      String contactName, String displayNumber, PhoneStateStatus status) {
+    await WebRTCHelper.initializeCaller(currentCallId!, channel);
     setState(() {
-      callerInfo = contactName != "Unknown" ? contactName : displayNumber;
-      callStatus = getCallStatusMessage(status, callerInfo);
-      if (isListening) {
-        _animationController.forward();
-      } else {
-        _animationController.reverse();
-      }
+      _isLiveStreamActive = true;
     });
-  }
-
-  void logCallEvent(PhoneStateStatus status, String contactName, String displayNumber) {
-    final timestamp = DateTime.now().toString().split('.')[0];
-    final statusString = status.toString().split('.').last;
-    final logMessage =
-        "$timestamp - $statusString: ${contactName != "Unknown" ? contactName : displayNumber}";
+    _logger.info('✅ Live stream initialized for call: $currentCallId');
+  } catch (e, stack) {
+    _logger.severe('❌ Error initializing live stream', e, stack);
     setState(() {
-      callHistory.insert(0, logMessage);
-      if (callHistory.length > 15) {
-        callHistory.removeLast();
-      }
+      _isLiveStreamActive = false;
     });
-  }
-
-  String formatPhoneNumber(String rawNumber) {
-    if (rawNumber.isEmpty || rawNumber == "Unknown") {
-      return "Unknown";
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to start live stream: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
-    return rawNumber.replaceAll(RegExp(r'[^\d+]'), '');
   }
+}
 
-  String getCallStatusMessage(PhoneStateStatus status, String info) {
+void handlePhoneStateChange(PhoneState phoneState) async {
+  try {
+    final String rawNumber = phoneState.number ?? "Unknown";
+    final PhoneStateStatus status = phoneState.status;
+    final String displayNumber = formatPhoneNumber(rawNumber);
+    final String contactName = await getContactName(displayNumber);
+    updateCallUI(contactName, displayNumber, status);
+    logCallEvent(status, contactName, displayNumber);
+    print("=== PHONE STATE CHANGE ===");
+    print("Status: $status");
+    print("Number: $displayNumber");
+    print("Contact: $contactName");
+    print("Current call active: $isCallActive");
     switch (status) {
       case PhoneStateStatus.CALL_INCOMING:
-        return "INCOMING CALL!\nFrom: $info";
+        await handleIncomingCall(displayNumber, contactName);
+        break;
       case PhoneStateStatus.CALL_STARTED:
-        return "CALL ACTIVE\nWith: $info";
+        await handleCallStarted(displayNumber, contactName);
+        break;
       case PhoneStateStatus.CALL_ENDED:
-        return "CALL ENDED\nWas with: $info";
+        await handleCallEnded(phoneState, displayNumber, contactName);
+        break;
       case PhoneStateStatus.NOTHING:
-        return "Listening for calls...";
-      default:
-        return "Unknown status";
+        if (isCallActive && !_apiCallSent) {
+          print("Call ended detected from NOTHING state");
+          await handleCallEnded(
+            phoneState,
+            lastNumber ?? displayNumber,
+            lastContactName ?? contactName,
+          );
+        }
+        break;
     }
-  }
-
-  Future<void> checkAndRequestPermissions() async {
-    try {
-      Map<Permission, PermissionStatus> statuses = await [
-        Permission.phone,
-        Permission.contacts,
-        if (Platform.isAndroid) Permission.manageExternalStorage,
-      ].request();
-
-      if (!statuses[Permission.phone]!.isGranted) {
-        setState(() => callStatus = "Phone permission denied.");
-        if (statuses[Permission.phone]!.isPermanentlyDenied) openAppSettings();
-        return;
-      }
-      if (!statuses[Permission.contacts]!.isGranted) {
-        setState(() => callStatus = "Contacts permission denied.");
-        if (statuses[Permission.contacts]!.isPermanentlyDenied) openAppSettings();
-        return;
-      }
-      if (Platform.isAndroid &&
-          !statuses[Permission.manageExternalStorage]!.isGranted) {
-        setState(() => callStatus = "Storage permission denied.");
-        if (statuses[Permission.manageExternalStorage]!.isPermanentlyDenied)
-          openAppSettings();
-        return;
-      }
-      await initPhoneListener();
-    } catch (e) {
-      print("Error requesting permissions: $e");
-      setState(() => callStatus = "Permission request failed: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Permission request failed: $e"),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> initPhoneListener() async {
-    try {
-      print("=== STARTING PHONE STATE LISTENER ===");
-      setState(() {
-        callStatus = "Starting listener...";
-        isListening = false;
-      });
-      await _phoneStateSubscription?.cancel();
-      _phoneStateSubscription = PhoneState.stream.listen(
-            (PhoneState phoneState) {
-          print("=== PHONE STATE RECEIVED ===");
-          print("Status: ${phoneState.status}");
-          print("Number: '${phoneState.number ?? 'null'}'");
-          handlePhoneStateChange(phoneState);
-        },
-        onError: (error) {
-          print("=== PHONE STATE ERROR ===");
-          print("Error: $error");
-          setState(() {
-            callStatus = "Listener error: $error";
-            isListening = false;
-          });
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text("Listener error: $error"),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-        },
-        onDone: () {
-          print("=== PHONE STATE STREAM CLOSED ===");
-          setState(() {
-            callStatus = "Phone state stream closed";
-            isListening = false;
-          });
-        },
+  } catch (e) {
+    print("Error handling phone state change: $e");
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Error processing call: $e"),
+          backgroundColor: Colors.red,
+        ),
       );
-      setState(() {
-        callStatus = "Listening for calls...";
-        isListening = true;
-      });
-      print("=== LISTENER STARTED SUCCESSFULLY ===");
-    } catch (e) {
-      print("=== ERROR STARTING LISTENER ===");
-      print("Error: $e");
-      setState(() {
-        callStatus = "Failed to start listener: $e";
-        isListening = false;
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Failed to start listener: $e"),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
     }
   }
+}
 
-  Future<File?> getLatestCallRecording() async {
-    try {
-      if (Platform.isIOS) {
-        _logger.info("iOS does not support accessing system call recordings.");
-        return null;
-      }
+void _resetCallVariables() {
+  print("=== RESETTING CALL VARIABLES ===");
+  callStartTime = null;
+  callEndTime = null;
+  lastNumber = null;
+  lastContactName = null;
+  currentCallId = null;
+  isCallActive = false;
+  isIncomingCall = false;
+  _apiCallSent = false;
+  _isLiveStreamActive = false;
+  callerInfo = "";
+  callStatus = "No active call";
+  print("All call variables reset");
+}
 
-      // Add delay to ensure recording is saved
-      await Future.delayed(const Duration(seconds: 2));
+Future<String> getAudioFileUrl(String callId) async {
+  return "http://192.168.1.3:8001/media/audio_files/Call_recording_$callId.m4a";
+}
 
-      final possiblePaths = [
-        '/storage/emulated/0/CallRecordings',
-        '/storage/emulated/0/Recordings/CallRecordings',
-        '/storage/emulated/0/MIUI/sound_recorder/call',
-        '/storage/emulated/0/Recordings/Call',
-        '/storage/emulated/0/Phone/Call',
-        "/sdcard/Phone/Call"
-      ];
+void updateCallUI(String contactName,
+    String displayNumber,
+    PhoneStateStatus status,) {
+  setState(() {
+    callerInfo = contactName != "Unknown" ? contactName : displayNumber;
+    callStatus = getCallStatusMessage(status, callerInfo);
+    if (isListening) {
+      _animationController.forward();
+    } else {
+      _animationController.reverse();
+    }
+  });
+}
 
-      for (String path in possiblePaths) {
-        try {
-          final directory = Directory(path);
-          if (!await directory.exists()) continue;
+void logCallEvent(PhoneStateStatus status,
+    String contactName,
+    String displayNumber,) {
+  final timestamp = DateTime.now().toString().split('.')[0];
+  final statusString = status
+      .toString()
+      .split('.')
+      .last;
+  final logMessage =
+      "$timestamp - $statusString: ${contactName != "Unknown"
+      ? contactName
+      : displayNumber}";
+  setState(() {
+    callHistory.insert(0, logMessage);
+    if (callHistory.length > 15) {
+      callHistory.removeLast();
+    }
+  });
+}
 
-          final files = await directory.list()
-              .where((entity) => entity is File)
-              .cast<File>()
-              .toList();
+String formatPhoneNumber(String rawNumber) {
+  if (rawNumber.isEmpty || rawNumber == "Unknown") {
+    return "Unknown";
+  }
+  return rawNumber.replaceAll(RegExp(r'[^\d+]'), '');
+}
 
-          if (files.isEmpty) continue;
+String getCallStatusMessage(PhoneStateStatus status, String info) {
+  switch (status) {
+    case PhoneStateStatus.CALL_INCOMING:
+      return "INCOMING CALL!\nFrom: $info";
+    case PhoneStateStatus.CALL_STARTED:
+      return "CALL ACTIVE\nWith: $info";
+    case PhoneStateStatus.CALL_ENDED:
+      return "CALL ENDED\nWas with: $info";
+    case PhoneStateStatus.NOTHING:
+      return "Listening for calls...";
+    default:
+      return "Unknown status";
+  }
+}
 
-          // Sort by modification date (newest first)
-          files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-
-          // Return the most recent file
-          return files.first;
-        } catch (e) {
-          _logger.warning('Error checking directory $path', e);
-        }
-      }
-      return null;
-    } catch (e) {
-      _logger.severe('Error in getLatestCallRecording', e);
-      return null;
+Future<void> checkAndRequestPermissions() async {
+  try {
+    Map<Permission, PermissionStatus> statuses =
+    await [
+      Permission.phone,
+      Permission.contacts,
+      if (Platform.isAndroid) Permission.manageExternalStorage,
+    ].request();
+    if (!statuses[Permission.phone]!.isGranted) {
+      setState(() => callStatus = "Phone permission denied.");
+      if (statuses[Permission.phone]!.isPermanentlyDenied) openAppSettings();
+      return;
+    }
+    if (!statuses[Permission.contacts]!.isGranted) {
+      setState(() => callStatus = "Contacts permission denied.");
+      if (statuses[Permission.contacts]!.isPermanentlyDenied)
+        openAppSettings();
+      return;
+    }
+    if (Platform.isAndroid &&
+        !statuses[Permission.manageExternalStorage]!.isGranted) {
+      setState(() => callStatus = "Storage permission denied.");
+      if (statuses[Permission.manageExternalStorage]!.isPermanentlyDenied)
+        openAppSettings();
+      return;
+    }
+    await initPhoneListener();
+  } catch (e) {
+    print("Error requesting permissions: $e");
+    setState(() => callStatus = "Permission request failed: $e");
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Permission request failed: $e"),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
+}
 
-  Future<String?> _getMyPhoneNumber({bool forDisplay = false}) async {
-    try {
-      if (!Platform.isAndroid) {
-        print("Not an Android device, returning default.");
-        return forDisplay ? "My Number" : null;
-      }
-      var status = await Permission.phone.status;
-      if (!status.isGranted) {
-        status = await Permission.phone.request();
-        if (!status.isGranted) {
-          print("Phone permission not granted");
-          return forDisplay ? "My Number" : null;
-        }
-      }
-      final plugin = SimNumberPicker();
-      final number = await plugin.getPhoneNumberHint();
-      if (number != null && number.isNotEmpty) {
-        print("Original SIM Number: $number");
-        String sanitized = number.replaceAll(RegExp(r'\s+|-'), '');
-        sanitized = sanitized.replaceFirst(RegExp(r'^\+?\d{1,3}'), '+91');
-        print("Modified SIM Number: $sanitized");
-        return forDisplay ? "My Number" : sanitized;
-      } else {
-        print("SIM number not available");
-        return forDisplay ? "My Number" : null;
-      }
-    } catch (e) {
-      print("Error getting my phone number: $e");
-      return forDisplay ? "My Number" : null;
-    }
-  }
-
-  void restartListener() {
-    print("=== RESTARTING LISTENER ===");
+Future<void> initPhoneListener() async {
+  try {
+    print("=== STARTING PHONE STATE LISTENER ===");
     setState(() {
-      callStatus = "Restarting listener...";
+      callStatus = "Starting listener...";
       isListening = false;
     });
-    _resetCallVariables(); // Reset call variables when restarting the listener
-    checkAndRequestPermissions();
-  }
-
-
-  void clearHistory() {
+    await _phoneStateSubscription?.cancel();
+    _phoneStateSubscription = PhoneState.stream.listen(
+          (PhoneState phoneState) {
+        print("=== PHONE STATE RECEIVED ===");
+        print("Status: ${phoneState.status}");
+        print("Number: '${phoneState.number ?? 'null'}'");
+        handlePhoneStateChange(phoneState);
+      },
+      onError: (error) {
+        print("=== PHONE STATE ERROR ===");
+        print("Error: $error");
+        setState(() {
+          callStatus = "Listener error: $error";
+          isListening = false;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Listener error: $error"),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      },
+      onDone: () {
+        print("=== PHONE STATE STREAM CLOSED ===");
+        setState(() {
+          callStatus = "Phone state stream closed";
+          isListening = false;
+        });
+      },
+    );
     setState(() {
-      callerInfo = "Unknown";
       callStatus = "Listening for calls...";
-      callHistory.clear();
+      isListening = true;
     });
+    print("=== LISTENER STARTED SUCCESSFULLY ===");
+  } catch (e) {
+    print("=== ERROR STARTING LISTENER ===");
+    print("Error: $e");
+    setState(() {
+      callStatus = "Failed to start listener: $e";
+      isListening = false;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Failed to start listener: $e"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
+}
 
-  Map<String, dynamic> getCallDebugInfo() {
-    return {
-      'isCallActive': isCallActive,
-      'isIncomingCall': isIncomingCall,
-      'apiCallSent': _apiCallSent,
-      'callStartTime': callStartTime?.toIso8601String(),
-      'callEndTime': callEndTime?.toIso8601String(),
-      'lastNumber': lastNumber,
-      'lastContactName': lastContactName,
-      'currentCallId': currentCallId,
-      'callerInfo': callerInfo,
-      'isLiveStreamActive': _isLiveStreamActive,
-    };
+Future<File?> getLatestCallRecording() async {
+  try {
+    if (Platform.isIOS) {
+      _logger.info("iOS does not support accessing system call recordings.");
+      return null;
+    }
+    await Future.delayed(const Duration(seconds: 2));
+    final possiblePaths = [
+      '/storage/emulated/0/CallRecordings',
+      '/storage/emulated/0/Recordings/CallRecordings',
+      '/storage/emulated/0/MIUI/sound_recorder/call',
+      '/storage/emulated/0/Recordings/Call',
+      '/storage/emulated/0/Phone/Call',
+      "/sdcard/Phone/Call",
+    ];
+    for (String path in possiblePaths) {
+      try {
+        final directory = Directory(path);
+        if (!await directory.exists()) continue;
+        final files =
+        await directory
+            .list()
+            .where((entity) => entity is File)
+            .cast<File>()
+            .toList();
+        if (files.isEmpty) continue;
+        files.sort(
+              (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
+        );
+        return files.first;
+      } catch (e) {
+        _logger.warning('Error checking directory $path', e);
+      }
+    }
+    return null;
+  } catch (e) {
+    _logger.severe('Error in getLatestCallRecording', e);
+    return null;
   }
+}
 
-  @override
-  Widget build(BuildContext context) {
-    print("isCallActive Checker: $isCallActive");
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Call Listener"),
-        actions: [
-          IconButton(
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const AdminHomePage()),
-            ),
-            icon: const Icon(Icons.login),
-            tooltip: "Admin Login",
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: restartListener,
-            tooltip: "Restart Listener",
-          ),
-          IconButton(
-            icon: const Icon(Icons.clear_all),
-            onPressed: clearHistory,
-            tooltip: "Clear History",
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            AnimatedBuilder(
-              animation: _colorAnimation,
-              builder: (context, child) {
-                return Card(
-                  elevation: 8,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12.0),
-                  ),
-                  color: _colorAnimation.value,
-                  child: Padding(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Column(
-                      children: [
-                        Icon(
-                          isListening ? Icons.phone : Icons.phone_disabled,
-                          size: 60,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(height: 20),
-                        Text(
-                          callStatus,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.only(top: 15),
-                          child: Text(
-                            "Caller: $callerInfo",
-                            style: const TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                        if (isCallActive && callStartTime != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 10),
-                            child: StreamBuilder(
-                              stream: Stream.periodic(const Duration(seconds: 1)),
-                              builder: (context, snapshot) {
-                                if (callStartTime == null)
-                                  return const SizedBox.shrink();
-                                final duration =
-                                DateTime.now().difference(callStartTime!);
-                                return Text(
-                                  "Duration: ${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}",
-                                  style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        if (isCallActive)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 5),
-                            child: Text(
-                              "API Status: ${_apiCallSent ? 'Sent' : 'Pending'}",
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: _apiCallSent
-                                    ? Colors.white
-                                    : Colors.white70,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-            const SizedBox(height: 20),
-            Expanded(
-              child: Card(
+Future<String?> _getMyPhoneNumber({bool forDisplay = false}) async {
+  try {
+    if (!Platform.isAndroid) {
+      print("Not an Android device, returning default.");
+      return forDisplay ? "My Number" : null;
+    }
+    var status = await Permission.phone.status;
+    if (!status.isGranted) {
+      status = await Permission.phone.request();
+      if (!status.isGranted) {
+        print("Phone permission not granted");
+        return forDisplay ? "My Number" : null;
+      }
+    }
+    final plugin = SimNumberPicker();
+    final number = await plugin.getPhoneNumberHint();
+    if (number != null && number.isNotEmpty) {
+      print("Original SIM Number: $number");
+      String sanitized = number.replaceAll(RegExp(r'\s+|-'), '');
+      sanitized = sanitized.replaceFirst(RegExp(r'^\+?\d{1,3}'), '+91');
+      print("Modified SIM Number: $sanitized");
+      return forDisplay ? "My Number" : sanitized;
+    } else {
+      print("SIM number not available");
+      return forDisplay ? "My Number" : null;
+    }
+  } catch (e) {
+    print("Error getting my phone number: $e");
+    return forDisplay ? "My Number" : null;
+  }
+}
+
+void restartListener() {
+  print("=== RESTARTING LISTENER ===");
+  setState(() {
+    callStatus = "Restarting listener...";
+    isListening = false;
+  });
+  _resetCallVariables();
+  checkAndRequestPermissions();
+}
+
+void clearHistory() {
+  setState(() {
+    callerInfo = "Unknown";
+    callStatus = "Listening for calls...";
+    callHistory.clear();
+  });
+}
+
+Map<String, dynamic> getCallDebugInfo() {
+  return {
+    'isCallActive': isCallActive,
+    'isIncomingCall': isIncomingCall,
+    'apiCallSent': _apiCallSent,
+    'callStartTime': callStartTime?.toIso8601String(),
+    'callEndTime': callEndTime?.toIso8601String(),
+    'lastNumber': lastNumber,
+    'lastContactName': lastContactName,
+    'currentCallId': currentCallId,
+    'callerInfo': callerInfo,
+    'isLiveStreamActive': _isLiveStreamActive,
+  };
+}
+
+@override
+Widget build(BuildContext context) {
+  print("isCallActive Checker: $isCallActive");
+  return Scaffold(
+    appBar: AppBar(
+      title: const Text("Call Listener"),
+      actions: [
+        IconButton(
+          onPressed:
+              () =>
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AdminHomePage(),
+                ),
+              ),
+          icon: const Icon(Icons.login),
+          tooltip: "Admin Login",
+        ),
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          onPressed: restartListener,
+          tooltip: "Restart Listener",
+        ),
+        IconButton(
+          icon: const Icon(Icons.clear_all),
+          onPressed: clearHistory,
+          tooltip: "Clear History",
+        ),
+      ],
+    ),
+    body: Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          AnimatedBuilder(
+            animation: _colorAnimation,
+            builder: (context, child) {
+              return Card(
                 elevation: 8,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12.0),
                 ),
-                child: Column(
-                  children: [
-                    const Padding(
-                      padding: EdgeInsets.all(16.0),
-                      child: Text(
-                        "Call History",
-                        style: TextStyle(
+                color: _colorAnimation.value,
+                child: Padding(
+                  padding: const EdgeInsets.all(20.0),
+                  child: Column(
+                    children: [
+                      Icon(
+                        isListening ? Icons.phone : Icons.phone_disabled,
+                        size: 60,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        callStatus,
+                        style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 15),
+                        child: Text(
+                          "Caller: $callerInfo",
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
-                    ),
-                    Expanded(
-                      child: callHistory.isEmpty
-                          ? const Center(
-                        child: Text("No call history yet."),
-                      )
-                          : ListView.builder(
-                        itemCount: callHistory.length,
-                        itemBuilder: (context, index) {
-                          return ListTile(
-                            title: Text(callHistory[index]),
-                          );
-                        },
+                      if (isCallActive && callStartTime != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: StreamBuilder(
+                            stream: Stream.periodic(
+                              const Duration(seconds: 1),
+                            ),
+                            builder: (context, snapshot) {
+                              if (callStartTime == null)
+                                return const SizedBox.shrink();
+                              final duration = DateTime.now().difference(
+                                callStartTime!,
+                              );
+                              return Text(
+                                "Duration: ${duration.inMinutes}:${(duration
+                                    .inSeconds % 60).toString().padLeft(
+                                    2, '0')}",
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      if (isCallActive)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 5),
+                          child: Text(
+                            "API Status: ${_apiCallSent ? 'Sent' : 'Pending'}",
+                            style: TextStyle(
+                              fontSize: 12,
+                              color:
+                              _apiCallSent
+                                  ? Colors.white
+                                  : Colors.white70,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 20),
+          Expanded(
+            child: Card(
+              elevation: 8,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12.0),
+              ),
+              child: Column(
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.all(16.0),
+                    child: Text(
+                      "Call History",
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                  Expanded(
+                    child:
+                    callHistory.isEmpty
+                        ? const Center(
+                      child: Text("No call history yet."),
+                    )
+                        : ListView.builder(
+                      itemCount: callHistory.length,
+                      itemBuilder: (context, index) {
+                        return ListTile(
+                          title: Text(callHistory[index]),
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
-    );
-  }
-}
+    ),
+  );
+}}
