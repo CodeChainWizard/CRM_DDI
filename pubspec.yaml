@@ -61,7 +61,7 @@ dependencies:
   flutter_staggered_animations: ^1.1.1
   shared_preferences: ^2.5.3
   logger: ^2.6.0
-#  flutter_local_notifications: ^19.3.0
+  flutter_local_notifications: ^19.3.0
   flutter_foreground_task: ^9.1.0
 
 
