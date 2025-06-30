@@ -146,6 +146,8 @@ class _CallListenerPageState extends State<CallListenerPage>
     }
   }
 
+  bool _hasShownAccessGranted = false;
+
   Future<void> _checkUserAccess(String phoneNumber) async {
     try {
       final userDetails = await API.getCallDetailsByNumber(phoneNumber);
@@ -160,8 +162,8 @@ class _CallListenerPageState extends State<CallListenerPage>
         }
         return;
       }
-      final hasAccess =
-          userDetails.containsKey('active') && userDetails['active'] == true;
+
+      final hasAccess = userDetails.containsKey('active') && userDetails['active'] == true;
       if (!hasAccess) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -174,13 +176,14 @@ class _CallListenerPageState extends State<CallListenerPage>
         await Future.delayed(const Duration(seconds: 2));
         SystemNavigator.pop();
       } else {
-        if (mounted) {
+        if (mounted && !_hasShownAccessGranted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Access granted. Welcome!'),
               backgroundColor: Colors.green,
             ),
           );
+          _hasShownAccessGranted = true;
         }
       }
     } catch (e) {
@@ -195,6 +198,9 @@ class _CallListenerPageState extends State<CallListenerPage>
       }
     }
   }
+
+
+
 
   Future<bool?> _getUserRecordingStatus(String phoneNumber) async {
     try {
@@ -315,58 +321,72 @@ class _CallListenerPageState extends State<CallListenerPage>
               child: const Text('Cancel'),
               onPressed: () {
                 Navigator.of(context).pop();
+                SystemNavigator.pop(); // Exit the app if the user cancels
               },
             ),
             TextButton(
               child: const Text('Save'),
               onPressed: () async {
                 final phoneNumber = phoneController.text.trim();
-                if (phoneNumber.isNotEmpty) {
-                  try {
-                    final userDetails = await API.getCallDetailsByNumber(
-                      phoneNumber,
-                    );
-                    if (userDetails == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Failed to verify number. Please try again.',
-                          ),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                      return;
-                    }
-                    final hasAccess =
-                        userDetails.containsKey('active') &&
-                        userDetails['active'] == true;
-                    if (!hasAccess) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'You do not have access to use this app.',
-                          ),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                      return;
-                    }
-                    await _savePhoneNumber(phoneNumber);
-                    Navigator.of(context).pop();
-                  } catch (e) {
+                if (phoneNumber.isEmpty || !_isValidPhoneNumber(phoneNumber)) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please enter a valid phone number.'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                  return;
+                }
+
+                try {
+                  // Step 1: Send OTP
+                  final otpResponse = await API.sendOtp(phoneNumber);
+                  if (otpResponse == null || otpResponse.containsKey('error')) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text(
-                          'Error verifying number: ${e.toString()}',
-                        ),
+                        content: Text('Failed to send OTP: ${otpResponse?['error'] ?? 'Unknown error'}'),
                         backgroundColor: Colors.red,
                       ),
                     );
+                    return;
                   }
-                } else {
+
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('Please enter a valid phone number'),
+                      content: Text('OTP sent successfully'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+
+                  // Step 2: Ask for OTP
+                  final otp = await _showOtpInputDialog(phoneNumber);
+                  if (otp == null || otp.isEmpty) return;
+
+                  // Step 3: Verify OTP
+                  final verifyResponse = await API.verifyOtp(
+                    phoneNumber: phoneNumber,
+                    otp: otp,
+                  );
+
+                  if (verifyResponse == null || verifyResponse.containsKey('error')) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('OTP verification failed: ${verifyResponse?['error'] ?? 'Unknown error'}'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                    return;
+                  }
+
+                  // Step 4: Check user access after successful OTP verification
+                  await _checkUserAccess(phoneNumber);
+
+                  await _savePhoneNumber(phoneNumber);
+                  Navigator.of(context).pop();
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Error verifying number: ${e.toString()}'),
                       backgroundColor: Colors.red,
                     ),
                   );
@@ -379,6 +399,57 @@ class _CallListenerPageState extends State<CallListenerPage>
     );
     await _markPopupAsShown();
   }
+
+  Future<String?> _showOtpInputDialog(String phoneNumber) async {
+    final otpController = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Enter OTP'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('An OTP has been sent to $phoneNumber'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: otpController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'OTP',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                final otp = otpController.text.trim();
+                Navigator.of(context).pop(otp);
+              },
+              child: const Text('Verify'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+
+// Helper method to validate phone number format
+  bool _isValidPhoneNumber(String phoneNumber) {
+    // Define a regex pattern for phone number validation
+    final pattern = r'^\+?[0-9]{10,15}$';
+    final regExp = RegExp(pattern);
+    return regExp.hasMatch(phoneNumber);
+  }
+
 
   Future<void> _savePhoneNumber(String phoneNumber) async {
     try {

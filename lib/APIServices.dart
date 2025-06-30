@@ -9,8 +9,8 @@ class API {
   static Future<Map<String, dynamic>?> sendOtp(String phoneNumber) async {
     try {
       final response = await http.post(
-        Uri.parse('http://192.168.1.6:8000/api/send_otp'),
-        body: {'phone_number': phoneNumber},
+        Uri.parse('$_baseUrl/api/send-otp/'),
+        body: {'mobileno': phoneNumber},
       );
 
       if (response.statusCode == 200) {
@@ -23,17 +23,12 @@ class API {
     }
   }
 
-  static Future<Map<String, dynamic>?> verifyOtp({
-    required String phoneNumber,
-    required String verificationId,
-    required String otp,
-  }) async {
+  static Future<Map<String, dynamic>?> verifyOtp({required String phoneNumber,required String otp,}) async {
     try {
       final response = await http.post(
-        Uri.parse('http://192.168.1.6:8000/api/verify_otp'),
+        Uri.parse('$_baseUrl/api/verify-otp/'),
         body: {
-          'phone_number': phoneNumber,
-          'verification_id': verificationId,
+          'mobileno': phoneNumber,
           'otp': otp,
         },
       );
@@ -47,6 +42,36 @@ class API {
       return {'error': 'Exception: $e'};
     }
   }
+
+  static Future<bool> adminLogin({required String email,required String password,}) async {
+    try {
+      final response = await http.post(
+        Uri.parse("$_baseUrl/api/admin/"),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'password': password}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        if (data is bool) {
+          return data;
+        } else if (data is Map && data['login'] != null) {
+          return data['login'] == true;
+        } else {
+          print("Unexpected response format: $data");
+          return false;
+        }
+      } else {
+        print("Login failed with status: ${response.statusCode}");
+        return false;
+      }
+    } catch (e) {
+      print("Error while Admin login: $e");
+      return false;
+    }
+  }
+
 
   static Future<bool> sendCallData({
     required String callId,
@@ -137,14 +162,18 @@ class API {
     }
   }
 
-  static Future<Map<String, dynamic>?> addUserByAdmin(String phoneNumber) async {
+  static Future<Map<String, dynamic>?> addUserByAdmin(
+    String phoneNumber,
+  ) async {
     try {
       final url = Uri.parse("$_baseUrl/api/users/");
-      final response = await http.post(
-        url,
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"mobileno": phoneNumber}),
-      ).timeout(const Duration(seconds: 15));
+      final response = await http
+          .post(
+            url,
+            headers: {"Content-Type": "application/json"},
+            body: jsonEncode({"mobileno": phoneNumber}),
+          )
+          .timeout(const Duration(seconds: 15));
 
       print("Status: ${response.statusCode}, Body: ${response.body}");
 
@@ -153,10 +182,7 @@ class API {
         data['statusCode'] = response.statusCode; // attach status code
         return data;
       } else {
-        return {
-          "statusCode": response.statusCode,
-          "error": response.body,
-        };
+        return {"statusCode": response.statusCode, "error": response.body};
       }
     } catch (e) {
       print("Error adding user: $e");
@@ -164,7 +190,7 @@ class API {
     }
   }
 
-  static Future<Map<String, dynamic>?> getCallDetailsByNumber(String phoneNumber) async {
+  static Future<Map<String, dynamic>?> getCallDetailsByNumber(String phoneNumber,) async {
     try {
       print("Fetching call details for: $phoneNumber");
 
@@ -219,7 +245,9 @@ class API {
 
   static Future<List<Map<String, dynamic>>?> getCallNumberAccess() async {
     try {
-      final response = await http.get(Uri.parse("$_baseUrl/api/recording_mobile/"));
+      final response = await http.get(
+        Uri.parse("$_baseUrl/api/recording_mobile/"),
+      );
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body) as List;
         return data.map((item) => item as Map<String, dynamic>).toList();
@@ -233,7 +261,10 @@ class API {
     }
   }
 
-  static Future<bool> updateUserStatus(String mobileNo, Map<String, dynamic> statusData) async {
+  static Future<bool> updateUserStatus(
+    String mobileNo,
+    Map<String, dynamic> statusData,
+  ) async {
     try {
       final url = Uri.parse("$_baseUrl/api/users/$mobileNo/");
       final response = await http.put(
@@ -255,21 +286,20 @@ class API {
     }
   }
 
-
-  static Future<Map<String, dynamic>?> sendSelectedNumbers(String phoneNumber, List<String> selectedNumbers) async {
+  static Future<Map<String, dynamic>?> sendSelectedNumbers(
+    String phoneNumber,
+    List<String> selectedNumbers,
+  ) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/access/$phoneNumber/'),
         headers: <String, String>{
           'Content-Type': 'application/json; charset=UTF-8',
         },
-        body: jsonEncode(<String, dynamic>{
-          'access_mobile': selectedNumbers,
-        }),
+        body: jsonEncode(<String, dynamic>{'access_mobile': selectedNumbers}),
       );
 
       print("PAYLOAD ACCESS: $selectedNumbers");
-
 
       if (response.statusCode == 201) {
         print("User Access: ${response.body}");
@@ -284,20 +314,20 @@ class API {
     }
   }
 
-  static Future<Map<String, dynamic>?> DeleteSelectedNumbers(String phoneNumber, List<String> selectedNumbers) async {
+  static Future<Map<String, dynamic>?> DeleteSelectedNumbers(
+    String phoneNumber,
+    List<String> selectedNumbers,
+  ) async {
     try {
       final response = await http.delete(
         Uri.parse('$_baseUrl/api/access/$phoneNumber/'),
         headers: <String, String>{
           'Content-Type': 'application/json; charset=UTF-8',
         },
-        body: jsonEncode(<String, dynamic>{
-          'access_mobile': selectedNumbers,
-        }),
+        body: jsonEncode(<String, dynamic>{'access_mobile': selectedNumbers}),
       );
 
       print("PAYLOAD ACCESS: $selectedNumbers");
-
 
       if (response.statusCode == 200) {
         print("User Access: ${response.body}");
@@ -312,14 +342,24 @@ class API {
     }
   }
 
-  static Future<List<Map<String, dynamic>>?> getCallDetails({required int page, int limit = 0}) async {
+  static Future<List<Map<String, dynamic>>?> getCallDetails({
+    required int page,
+    int limit = 0,
+    String? phoneNumber,
+  }) async {
     try {
       print("Fetching call details (page: $page, limit: $limit)...");
 
-      final url = Uri.parse("$_baseUrl/api/calls?skip=$limit&take=$page");
+      final queryParams = {
+        'skip': '$limit',
+        'take': '$page',
+        if (phoneNumber != null && phoneNumber.isNotEmpty) 'phoneNumber': phoneNumber,
+      };
+
+      final uri = Uri.parse("$_baseUrl/api/calls").replace(queryParameters: queryParams);
 
       final response = await http
-          .get(url, headers: {"Content-Type": "application/json"})
+          .get(uri, headers: {"Content-Type": "application/json"})
           .timeout(const Duration(seconds: 15));
 
       print("GET Response: ${response.statusCode}");
@@ -399,7 +439,9 @@ class API {
 
   static Future<List<String>?> getAccessNumberByUser(String phoneNumber) async {
     try {
-      final response = await http.get(Uri.parse("$_baseUrl/api/access/$phoneNumber/"));
+      final response = await http.get(
+        Uri.parse("$_baseUrl/api/access/$phoneNumber/"),
+      );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -473,17 +515,15 @@ class API {
     final response = await http.put(
       Uri.parse("$_baseUrl/api/calls/$callId/"),
       headers: {"Content-Type": "application/json"},
-      body: jsonEncode({"status":status}),
+      body: jsonEncode({"status": status}),
     );
 
-    if(response.statusCode != 200){
+    if (response.statusCode != 200) {
       print("ERROR WHILE UPDATE STATUS: ${response.body}");
       throw Exception('Failed to update call status');
     }
   }
 }
-
-
 
 // import 'dart:convert';
 // import 'dart:io';

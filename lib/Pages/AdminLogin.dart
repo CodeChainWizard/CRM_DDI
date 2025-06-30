@@ -2,6 +2,8 @@ import 'package:crm_new/Pages/AdminDashboard.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../APIServices.dart';
+
 class AdminLogin extends StatefulWidget {
   const AdminLogin({super.key});
 
@@ -15,6 +17,10 @@ class _AdminLoginState extends State<AdminLogin> {
   final TextEditingController _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+
+  Future<bool> _authenticate(String email, String password) async {
+    return await API.adminLogin(email: email, password: password);
+  }
 
   Future<void> _handleLogin() async {
     if (_formKey.currentState!.validate()) {
@@ -49,10 +55,6 @@ class _AdminLoginState extends State<AdminLogin> {
     }
   }
 
-  Future<bool> _authenticate(String email, String password) async {
-    // Replace with actual authentication logic
-    return email.isNotEmpty && password.isNotEmpty;
-  }
 
   void _showErrorSnackbar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
