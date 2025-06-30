@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:logging/logging.dart';
@@ -775,7 +776,6 @@ class _CallListenerPageState extends State<CallListenerPage>
     }
   }
 
-
   String generateRandomCallId() {
     final random = Random();
     return '${DateTime.now().millisecondsSinceEpoch}_${random.nextInt(100000)}';
@@ -1049,40 +1049,303 @@ class _CallListenerPageState extends State<CallListenerPage>
         _logger.info("iOS does not support accessing system call recordings.");
         return null;
       }
+
+      _logger.info("🎙️ getLatestCallRecording() started");
       await Future.delayed(const Duration(seconds: 2));
-      final possiblePaths = [
-        '/storage/emulated/0/CallRecordings',
-        '/storage/emulated/0/Recordings/CallRecordings',
-        '/storage/emulated/0/MIUI/sound_recorder/call',
-        '/storage/emulated/0/Recordings/Call',
-        '/storage/emulated/0/Phone/Call',
-        "/sdcard/Phone/Call",
+
+      // First, let's scan all possible root directories
+      final rootPaths = [
+        '/storage/emulated/0',
+        '/sdcard',
+        '/storage/self/primary',
       ];
-      for (String path in possiblePaths) {
+
+      final allowedExtensions = ['.mp3', '.mp4', '.m4a', '.3gp', '.aac', '.wav'];
+      final namePrefixes = [
+        'Call recording',
+        'call recording',
+        'Call_recording',
+        'call_recording',
+      ];
+
+      // Comprehensive list of possible subdirectories where call recordings might be stored
+      final possibleSubPaths = [
+        'Phone/Call',
+        'CallRecordings',
+        'Recordings/CallRecordings',
+        'Recordings/Call',
+        'MIUI/sound_recorder/call',
+        'Recordings',
+        'Phone',
+        'Call',
+        'Audio/Call',
+        'Music/Call',
+        'Downloads/Call',
+        'Documents/Call',
+        'Samsung/CallRecording',
+        'Xiaomi/CallRecording',
+        'Huawei/CallRecording',
+        'OnePlus/CallRecording',
+        'DCIM/CallRecording', // Some phones store here
+        'Android/data/com.android.dialer/files',
+        'Android/data/com.samsung.android.dialer/files',
+      ];
+
+      List<String> allPossiblePaths = [];
+
+      // Generate all combinations of root paths and sub paths
+      for (final root in rootPaths) {
+        for (final sub in possibleSubPaths) {
+          allPossiblePaths.add('$root/$sub');
+        }
+        // Also check root directories directly
+        allPossiblePaths.add(root);
+      }
+
+      _logger.info("🔍 Will check ${allPossiblePaths.length} possible directories");
+
+      // First pass: Find directories that exist and log them
+      List<Directory> existingDirs = [];
+      for (final path in allPossiblePaths) {
         try {
           final directory = Directory(path);
-          if (!await directory.exists()) continue;
-          final files =
-              await directory
-                  .list()
-                  .where((entity) => entity is File)
-                  .cast<File>()
-                  .toList();
-          if (files.isEmpty) continue;
-          files.sort(
-            (a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()),
-          );
-          return files.first;
+          if (await directory.exists()) {
+            existingDirs.add(directory);
+            _logger.info("✅ Directory exists: $path");
+          }
         } catch (e) {
-          _logger.warning('Error checking directory $path', e);
+          // Silently continue
         }
       }
+
+      _logger.info("📁 Found ${existingDirs.length} existing directories");
+
+      // Second pass: Search for call recording files in existing directories
+      for (final directory in existingDirs) {
+        try {
+          _logger.info("🔍 Searching in: ${directory.path}");
+
+          final entities = await directory.list().toList();
+          final allFiles = entities.whereType<File>().toList();
+
+          _logger.info("📄 Found ${allFiles.length} total files in ${directory.path}");
+
+          // Log first few files to see naming patterns
+          if (allFiles.isNotEmpty) {
+            _logger.info("📋 Sample files in ${directory.path}:");
+            for (int i = 0; i < math.min(5, allFiles.length); i++) {
+              final fileName = allFiles[i].path.split('/').last;
+              _logger.info("  - $fileName");
+            }
+          }
+
+          final callRecordingFiles = allFiles.where((file) {
+            final fileName = file.path.split('/').last;
+            final fileNameLower = fileName.toLowerCase();
+
+            // Check if file has allowed extension
+            final extMatch = allowedExtensions.any((ext) => fileNameLower.endsWith(ext));
+
+            // Check if file name contains call recording keywords (more flexible)
+            final nameMatch = namePrefixes.any((prefix) =>
+            fileName.contains(prefix) ||
+                fileNameLower.contains(prefix.toLowerCase()) ||
+                fileNameLower.contains('call') && fileNameLower.contains('record')
+            );
+
+            if (extMatch && nameMatch) {
+              _logger.info("🎯 Found matching file: $fileName");
+            }
+
+            return extMatch && nameMatch;
+          }).toList();
+
+          _logger.info("🎙️ Found ${callRecordingFiles.length} call recording files in: ${directory.path}");
+
+          if (callRecordingFiles.isNotEmpty) {
+            // Sort by last modified time (newest first)
+            callRecordingFiles.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+            final latestFile = callRecordingFiles.first;
+
+            final fileSize = await latestFile.length();
+            _logger.info("✅ Latest recording found: ${latestFile.path}");
+            _logger.info("✅ File size: $fileSize bytes");
+            _logger.info("✅ Last modified: ${latestFile.lastModifiedSync()}");
+
+            return latestFile;
+          }
+        } catch (e, stackTrace) {
+          _logger.warning('⚠️ Error searching directory ${directory.path}', e, stackTrace);
+        }
+      }
+
+      // Third pass: Try to find any audio files that might be call recordings
+      _logger.info("🔍 Third pass: Looking for any audio files with phone numbers in name");
+
+      for (final directory in existingDirs) {
+        try {
+          final entities = await directory.list().toList();
+          final audioFiles = entities.whereType<File>().where((file) {
+            final fileName = file.path.split('/').last.toLowerCase();
+            final hasAudioExt = allowedExtensions.any((ext) => fileName.endsWith(ext));
+
+            // Look for files with phone number patterns
+            final hasPhoneNumber = RegExp(r'[+]?\d{10,}').hasMatch(fileName);
+
+            return hasAudioExt && hasPhoneNumber;
+          }).toList();
+
+          if (audioFiles.isNotEmpty) {
+            _logger.info("🎵 Found ${audioFiles.length} audio files with phone numbers in: ${directory.path}");
+
+            for (final file in audioFiles.take(3)) { // Log first 3 files
+              final fileName = file.path.split('/').last;
+              _logger.info("  📱 $fileName");
+            }
+
+            // Sort by last modified time and return the newest
+            audioFiles.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+            final latestFile = audioFiles.first;
+
+            _logger.info("✅ Latest audio file with phone number: ${latestFile.path}");
+            return latestFile;
+          }
+        } catch (e) {
+          // Continue searching
+        }
+      }
+
+      _logger.warning("📭 No call recording files found in any accessible directory");
       return null;
-    } catch (e) {
-      _logger.severe('Error in getLatestCallRecording', e);
+
+    } catch (e, stackTrace) {
+      _logger.severe('❌ Error in getLatestCallRecording', e, stackTrace);
       return null;
     }
   }
+
+// Helper method to scan device and find where recordings are actually stored
+  Future<void> scanDeviceForRecordings() async {
+    try {
+      _logger.info("🔍 Starting comprehensive device scan for call recordings...");
+
+      final rootPaths = ['/storage/emulated/0', '/sdcard'];
+
+      for (final rootPath in rootPaths) {
+        await _scanDirectoryRecursively(rootPath, 0, 3); // Max depth of 3
+      }
+    } catch (e) {
+      _logger.severe('Error scanning device', e);
+    }
+  }
+
+  Future<void> _scanDirectoryRecursively(String path, int currentDepth, int maxDepth) async {
+    if (currentDepth > maxDepth) return;
+
+    try {
+      final directory = Directory(path);
+      if (!await directory.exists()) return;
+
+      final entities = await directory.list().toList();
+
+      // Check for audio files in current directory
+      final audioFiles = entities.whereType<File>().where((file) {
+        final fileName = file.path.split('/').last.toLowerCase();
+        return ['.mp3', '.mp4', '.m4a', '.3gp', '.aac', '.wav'].any((ext) => fileName.endsWith(ext));
+      }).toList();
+
+      if (audioFiles.isNotEmpty) {
+        _logger.info("🎵 Found ${audioFiles.length} audio files in: $path");
+
+        // Check for call recording patterns
+        final callFiles = audioFiles.where((file) {
+          final fileName = file.path.split('/').last.toLowerCase();
+          return fileName.contains('call') ||
+              fileName.contains('record') ||
+              RegExp(r'[+]?\d{10,}').hasMatch(fileName);
+        }).toList();
+
+        if (callFiles.isNotEmpty) {
+          _logger.info("📞 Found ${callFiles.length} potential call recordings in: $path");
+          for (final file in callFiles.take(2)) {
+            _logger.info("  📱 ${file.path.split('/').last}");
+          }
+        }
+      }
+
+      // Recursively scan subdirectories
+      final subdirs = entities.whereType<Directory>().where((dir) {
+        final dirName = dir.path.split('/').last.toLowerCase();
+        // Skip system directories to avoid permission issues
+        return !['android', 'data', '.', '..'].contains(dirName);
+      });
+
+      for (final subdir in subdirs) {
+        await _scanDirectoryRecursively(subdir.path, currentDepth + 1, maxDepth);
+      }
+
+    } catch (e) {
+      // Permission denied or other error, continue
+    }
+  }
+
+
+  // Future<File?> getLatestCallRecording() async {
+  //   try {
+  //     if (Platform.isIOS) {
+  //       _logger.info("iOS does not support accessing system call recordings.");
+  //       return null;
+  //     }
+  //
+  //     await Future.delayed(const Duration(seconds: 2));
+  //
+  //     final possiblePaths = [
+  //       '/storage/emulated/0/CallRecordings',
+  //       '/storage/emulated/0/Recordings/CallRecordings',
+  //       '/storage/emulated/0/MIUI/sound_recorder/call',
+  //       '/storage/emulated/0/Recordings/Call',
+  //       '/storage/emulated/0/Phone/Call',
+  //       '/sdcard/Phone/Call',
+  //     ];
+  //
+  //     final allowedExtensions = ['.mp3', '.mp4', '.m4a', '.3gp', '.aac', '.wav'];
+  //
+  //     for (String path in possiblePaths) {
+  //       try {
+  //         final directory = Directory(path);
+  //         _logger.info("Checking directory: $path");
+  //         print("PATH FOR PATH TO RECORING STORE: $path");
+  //         // _logger.info("Found file: ${entity.path}");
+  //         if (!await directory.exists()) continue;
+  //
+  //         final files = await directory
+  //             .list()
+  //             .where((entity) =>
+  //         entity is File &&
+  //             allowedExtensions.any(
+  //                     (ext) => entity.path.toLowerCase().endsWith(ext)))
+  //             .cast<File>()
+  //             .toList();
+  //
+  //
+  //         if (files.isEmpty) continue;
+  //
+  //         files.sort((a, b) =>
+  //             b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+  //
+  //         return files.first;
+  //       } catch (e) {
+  //         _logger.warning('Error checking directory $path', e);
+  //       }
+  //     }
+  //
+  //     return null;
+  //   } catch (e) {
+  //     _logger.severe('Error in getLatestCallRecording', e);
+  //     return null;
+  //   }
+  // }
+
 
   Future<String?> _getMyPhoneNumber({bool forDisplay = false}) async {
     try {

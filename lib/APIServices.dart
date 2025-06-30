@@ -4,12 +4,12 @@ import 'package:http_parser/http_parser.dart';
 import 'package:http/http.dart' as http;
 
 class API {
-  static final String _baseUrl = "http://192.168.1.3:8001";
+  static final String _baseUrl = "http://192.168.1.6:8001";
 
   static Future<Map<String, dynamic>?> sendOtp(String phoneNumber) async {
     try {
       final response = await http.post(
-        Uri.parse('http://192.168.1.3:8000/api/send_otp'),
+        Uri.parse('http://192.168.1.6:8000/api/send_otp'),
         body: {'phone_number': phoneNumber},
       );
 
@@ -30,7 +30,7 @@ class API {
   }) async {
     try {
       final response = await http.post(
-        Uri.parse('http://192.168.1.3:8000/api/verify_otp'),
+        Uri.parse('http://192.168.1.6:8000/api/verify_otp'),
         body: {
           'phone_number': phoneNumber,
           'verification_id': verificationId,
