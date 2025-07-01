@@ -30,18 +30,12 @@
         >
 
         <service
-            android:name="com.transistorsoft.flutter.backgroundfetch.HeadlessTask"
-            android:enabled="true"
-            android:exported="true"
-            android:permission="android.permission.BIND_JOB_SERVICE"
-            tools:ignore="MissingClass" />
+            android:name="com.it_nomads.fluttersecurestorage.FlutterSecureStorageBackgroundService"
+            android:exported="false" />
 
-        <service
-            android:name="com.transistorsoft.flutter.backgroundfetch.HeadlessTask"
-            android:enabled="true"
-            android:exported="true"
-            android:permission="android.permission.BIND_JOB_SERVICE"
-            tools:ignore="MissingClass" />
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
 
         <activity
             android:name=".MainActivity"
